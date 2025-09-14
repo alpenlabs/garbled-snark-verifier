@@ -145,6 +145,25 @@ fn run_with_hasher<H: GateHasher + 'static>() {
         info!("garbling#1: {} gates (elapsed < 1ms)", garble_total);
     }
 
+    // Print detailed gate count breakdown
+    let gc = &garbling_result.gate_count;
+    println!("Gate Count Breakdown:");
+    println!("And         {:>15}", gc.0[0]);
+    println!("Nand        {:>15}", gc.0[1]);
+    println!("Nimp        {:>15}", gc.0[2]);
+    println!("Imp         {:>15}", gc.0[3]);
+    println!("Ncimp       {:>15}", gc.0[4]);
+    println!("Cimp        {:>15}", gc.0[5]);
+    println!("Nor         {:>15}", gc.0[6]);
+    println!("Or          {:>15}", gc.0[7]);
+    println!("Xor         {:>15}", gc.0[8]);
+    println!("Xnor        {:>15}", gc.0[9]);
+    println!("Not         {:>15}", gc.0[10]);
+    println!();
+    println!("Non-Free    {:>15}", gc.nonfree_gate_count());
+    println!("Free        {:>15}", gc.0[8] + gc.0[9]); // Xor + Xnor
+    println!("Total       {:>15}", gc.total_gate_count());
+
     let GarbledWire { label0, label1 } = garbling_result.output_wires.remove(0);
 
     let ciphertext_hash: u128 = ciphertext_hash.join().unwrap();
