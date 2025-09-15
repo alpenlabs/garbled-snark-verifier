@@ -24,13 +24,18 @@ pub fn hardware_aes_available() -> bool {
 #[inline]
 pub fn warn_if_software_aes() {
     let cpu_has_aes = hardware_aes_available();
-    let compiled_with_x86_aesni = cfg!(all(
+    println!("Hardware AES detected : {}", cpu_has_aes);
+    let compiled_with_aes = cfg!(all(
         any(target_arch = "x86", target_arch = "x86_64"),
         target_feature = "aes",
         target_feature = "sse2"
+    )) || cfg!(all(
+        target_arch = "aarch64",
+        aes_armv8
     ));
+    println!("Compiled with AES support: {}", compiled_with_aes);
 
-    if !cpu_has_aes || !compiled_with_x86_aesni {
+    if !cpu_has_aes || !compiled_with_aes {
         eprintln!("Warning: AES hardware acceleration not used; falling back to software AES.");
     }
 }
