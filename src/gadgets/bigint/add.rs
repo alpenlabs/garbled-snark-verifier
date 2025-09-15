@@ -263,7 +263,7 @@ mod tests {
         let input = Input::new(n_bits, [a_val, b_val]);
 
         let StreamingResult {
-            output_wires,
+            output_value: output_wires,
             output_wires_ids,
             ..
         }: crate::circuit::streaming::StreamingResult<ExecuteMode, _, Vec<bool>> =
@@ -311,7 +311,7 @@ mod tests {
         let b_big = BigUint::from(b_val);
 
         let StreamingResult {
-            output_wires,
+            output_value: output_wires,
             output_wires_ids,
             ..
         }: crate::circuit::streaming::StreamingResult<ExecuteMode, _, Vec<bool>> =
@@ -421,7 +421,7 @@ mod tests {
         let input = Input::new(n_bits, [a_val]);
 
         let StreamingResult {
-            output_wires,
+            output_value: output_wires,
             output_wires_ids,
             ..
         }: crate::circuit::streaming::StreamingResult<ExecuteMode, _, Vec<bool>> =
@@ -516,7 +516,7 @@ mod tests {
                 odd_part(root, a)
             });
 
-        assert_eq!(result.output_wires.odd, expected_odd);
-        assert_eq!(result.output_wires.k, expected_k);
+        assert_eq!(result.output_value.odd, expected_odd);
+        assert_eq!(result.output_value.k, expected_k);
     }
 }

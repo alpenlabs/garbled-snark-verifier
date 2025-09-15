@@ -47,10 +47,22 @@ pub mod test_utils {
     }
 }
 
-pub mod groth16_proof_api;
-pub use groth16_proof_api::*;
+pub mod garbled_groth16;
 
-// Backwards-compatible module path for examples/imports
-pub mod groth16_proof {
-    pub use crate::groth16_proof_api::*;
+// All ark-* related items live under this module for clarity
+pub mod ark {
+    // Field traits and RNG utilities
+    // Curve types and configs used by examples
+    pub use ark_bn254::{Bn254, Fq, Fq2, Fq12, Fr, G1Projective, G2Affine, G2Projective, g1, g2};
+    // EC traits
+    pub use ark_ec::{AffineRepr, CurveGroup, PrimeGroup, short_weierstrass::SWCurveConfig};
+    pub use ark_ff::{PrimeField, UniformRand, fields::Field};
+    // SNARK traits and Groth16 scheme
+    pub use ark_groth16::Groth16;
+    // R1CS interfaces and lc! macro
+    pub use ark_relations::{
+        lc,
+        r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError},
+    };
+    pub use ark_snark::{CircuitSpecificSetupSNARK, SNARK};
 }

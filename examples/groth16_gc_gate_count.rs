@@ -3,18 +3,11 @@
 
 use std::env;
 
-use ark_ec::AffineRepr;
-use ark_ff::UniformRand;
-use ark_relations::{
-    lc,
-    r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError},
-};
-use ark_snark::{CircuitSpecificSetupSNARK, SNARK};
-use garbled_snark_verifier as gsv;
-use gsv::{
-    Groth16ExecInput,
+use garbled_snark_verifier::{
+    ark,
+    ark::{CircuitSpecificSetupSNARK, SNARK, UniformRand},
     circuit::streaming::{CircuitBuilder, StreamingResult},
-    groth16_verify,
+    garbled_groth16,
 };
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
@@ -36,41 +29,52 @@ fn format_number(n: u64) -> String {
 const K: usize = 6; // match main branch default
 
 #[derive(Copy, Clone)]
-struct DummyCircuit<F: ark_ff::PrimeField> {
+struct DummyCircuit<F: ark::PrimeField> {
     pub a: Option<F>,
     pub b: Option<F>,
     pub num_variables: usize,
     pub num_constraints: usize,
 }
 
-impl<F: ark_ff::PrimeField> ConstraintSynthesizer<F> for DummyCircuit<F> {
-    fn generate_constraints(self, cs: ConstraintSystemRef<F>) -> Result<(), SynthesisError> {
-        let a = cs.new_witness_variable(|| self.a.ok_or(SynthesisError::AssignmentMissing))?;
-        let b = cs.new_witness_variable(|| self.b.ok_or(SynthesisError::AssignmentMissing))?;
+impl<F: ark::PrimeField> ark::ConstraintSynthesizer<F> for DummyCircuit<F> {
+    fn generate_constraints(
+        self,
+        cs: ark::ConstraintSystemRef<F>,
+    ) -> Result<(), ark::SynthesisError> {
+        let a = cs.new_witness_variable(|| self.a.ok_or(ark::SynthesisError::AssignmentMissing))?;
+        let b = cs.new_witness_variable(|| self.b.ok_or(ark::SynthesisError::AssignmentMissing))?;
         let c = cs.new_input_variable(|| {
-            let a = self.a.ok_or(SynthesisError::AssignmentMissing)?;
-            let b = self.b.ok_or(SynthesisError::AssignmentMissing)?;
+            let a = self.a.ok_or(ark::SynthesisError::AssignmentMissing)?;
+            let b = self.b.ok_or(ark::SynthesisError::AssignmentMissing)?;
             Ok(a * b)
         })?;
 
         for _ in 0..(self.num_variables - 3) {
-            let _ = cs.new_witness_variable(|| self.a.ok_or(SynthesisError::AssignmentMissing))?;
+            let _ =
+                cs.new_witness_variable(|| self.a.ok_or(ark::SynthesisError::AssignmentMissing))?;
         }
         for _ in 0..self.num_constraints - 1 {
-            cs.enforce_constraint(lc!() + a, lc!() + b, lc!() + c)?;
+            cs.enforce_constraint(ark::lc!() + a, ark::lc!() + b, ark::lc!() + c)?;
         }
-        cs.enforce_constraint(lc!(), lc!(), lc!())?;
+        cs.enforce_constraint(ark::lc!(), ark::lc!(), ark::lc!())?;
         Ok(())
     }
 }
 
 fn main() {
-    let json_output = env::args().any(|a| a == "--json");
+    let args: Vec<String> = env::args().collect();
+    let json_output = args.iter().any(|a| a == "--json");
+    let is_compressed = args.iter().any(|a| a == "--compressed");
     if !json_output {
         println!(
-            "Running Groth16 gate-count example: k={}, constraints={}",
+            "Running Groth16 gate-count example: k={}, constraints={}, mode={}",
             K,
-            1 << K
+            1 << K,
+            if is_compressed {
+                "compressed"
+            } else {
+                "uncompressed"
+            }
         );
     }
 
@@ -78,34 +82,45 @@ fn main() {
     let mut rng = ChaCha20Rng::seed_from_u64(12345);
 
     // Build a tiny multiplicative circuit and produce a valid Groth16 proof
-    let circuit = DummyCircuit::<ark_bn254::Fr> {
-        a: Some(ark_bn254::Fr::rand(&mut rng)),
-        b: Some(ark_bn254::Fr::rand(&mut rng)),
+    let circuit = DummyCircuit::<ark::Fr> {
+        a: Some(ark::Fr::rand(&mut rng)),
+        b: Some(ark::Fr::rand(&mut rng)),
         num_variables: 10,
         num_constraints: 1 << K,
     };
 
-    let (pk, vk) = ark_groth16::Groth16::<ark_bn254::Bn254>::setup(circuit, &mut rng).unwrap();
+    let (pk, vk) = ark::Groth16::<ark::Bn254>::setup(circuit, &mut rng).unwrap();
     let c_val = circuit.a.unwrap() * circuit.b.unwrap();
-    let proof = ark_groth16::Groth16::<ark_bn254::Bn254>::prove(&pk, circuit, &mut rng).unwrap();
+    let proof = ark::Groth16::<ark::Bn254>::prove(&pk, circuit, &mut rng).unwrap();
 
-    // Prepare input wires and run streaming execute to count gates
-    let inputs = Groth16ExecInput {
-        public: vec![c_val],
-        a: proof.a.into_group(),
-        b: proof.b.into_group(),
-        c: proof.c.into_group(),
+    // Construct input once, then choose uncompressed vs compressed execution
+    let proof_input = garbled_groth16::Proof::new(proof, vec![c_val]);
+    let verify = garbled_groth16::VerifierInput {
+        proof: proof_input,
+        vk: vk.clone(),
     };
 
-    let result: StreamingResult<_, _, Vec<bool>> =
-        CircuitBuilder::streaming_execute(inputs, 40_000, |ctx, wires| {
-            let ok = groth16_verify(ctx, &wires.public, &wires.a, &wires.b, &wires.c, &vk);
-            vec![ok]
-        });
+    let (verified, gate_count) = if is_compressed {
+        // Compressed path includes decompression gadgets; allocate more gates
+        let result: StreamingResult<_, _, bool> = CircuitBuilder::streaming_execute(
+            garbled_groth16::Compressed(verify),
+            160_000,
+            garbled_groth16::verify_compressed,
+        );
 
-    let verified = result.output_wires[0];
-    let total_gates = result.gate_count.total_gate_count();
-    let nonfree_gates = result.gate_count.nonfree_gate_count();
+        (result.output_value, result.gate_count)
+    } else {
+        let result: StreamingResult<_, _, bool> = CircuitBuilder::streaming_execute(
+            garbled_groth16::Uncompressed(verify),
+            160_000,
+            garbled_groth16::verify,
+        );
+
+        (result.output_value, result.gate_count)
+    };
+
+    let total_gates = gate_count.total_gate_count();
+    let nonfree_gates = gate_count.nonfree_gate_count();
     let free_gates = total_gates.saturating_sub(nonfree_gates);
 
     if json_output {
@@ -118,9 +133,10 @@ fn main() {
                 "free_formatted": format_number(free_gates),
                 "total": total_gates,
                 "total_formatted": format_number(total_gates),
-                "breakdown": result.gate_count.0
+                "breakdown": gate_count.0
             },
-            "verification_result": verified
+            "verification_result": verified,
+            "compressed": is_compressed
         });
         println!("{}", serde_json::to_string_pretty(&output).expect("json"));
     } else {
@@ -129,5 +145,13 @@ fn main() {
         println!("free:     {}", free_gates);
         println!("total:    {}", total_gates);
         println!("verified: {}", verified);
+        println!(
+            "mode:     {}",
+            if is_compressed {
+                "compressed"
+            } else {
+                "uncompressed"
+            }
+        );
     }
 }

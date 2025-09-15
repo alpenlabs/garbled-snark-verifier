@@ -4,7 +4,7 @@ use crossbeam::channel;
 use log::info;
 
 use crate::{
-    S, WireId,
+    EvaluatedWire, GarbledWire, S, WireId,
     circuit::streaming::component_meta::ComponentMetaBuilder,
     core::{gate::garbling::GateHasher, gate_type::GateCount},
 };
@@ -79,14 +79,42 @@ pub struct CircuitBuilder<M: CircuitMode> {
 
 #[derive(Debug)]
 pub struct StreamingResult<M: CircuitMode, I: CircuitInput, O: CircuitOutput<M>> {
-    pub input_wires: I::WireRepr,
-    pub output_wires: O,
+    /// Constant to represent false wire constant
+    ///
+    /// Necessary to restart the scheme and consistency
+    pub false_wire_constant: M::WireValue,
+
+    /// Constant to represent true wire constant
+    ///
+    /// Necessary to restart the scheme and consistency
+    pub true_wire_constant: M::WireValue,
+
+    /// Type representing the on-circuit type with `WireId` fixed for the input
+    pub input_wires_repr: I::WireRepr,
+
+    /// Output `WireId` in return order
     pub output_wires_ids: Vec<WireId>,
 
-    pub false_constant: M::WireValue,
-    pub true_constant: M::WireValue,
-    pub input_values: Vec<M::WireValue>,
+    /// Decoded off-circuit output with [`CircuitOutput`]
+    pub output_value: O,
+
+    /// Values of the input Wires, which were fed to the circuit input
+    pub input_wire_values: Vec<M::WireValue>,
+
     pub gate_count: GateCount,
+}
+
+// Convenience helpers for garbling results
+impl<H: GateHasher, I: CircuitInput> StreamingResult<GarbleMode<H>, I, GarbledWire> {
+    /// Return references to (label0, label1) of the single-bit output.
+    pub fn output_labels(&self) -> (&crate::S, &crate::S) {
+        (&self.output_value.label0, &self.output_value.label1)
+    }
+
+    /// Borrow all input garbled labels in allocation order.
+    pub fn input_labels(&self) -> &[GarbledWire] {
+        &self.input_wire_values
+    }
 }
 
 impl CircuitBuilder<ExecuteMode> {
@@ -240,12 +268,12 @@ impl<M: CircuitMode> CircuitBuilder<M> {
         };
 
         StreamingResult {
-            output_wires: output,
+            output_value: output,
             output_wires_ids: output_wires,
-            true_constant: ctx.lookup_wire(TRUE_WIRE).unwrap(),
-            false_constant: ctx.lookup_wire(FALSE_WIRE).unwrap(),
-            input_wires: allocated_inputs,
-            input_values,
+            true_wire_constant: ctx.lookup_wire(TRUE_WIRE).unwrap(),
+            false_wire_constant: ctx.lookup_wire(FALSE_WIRE).unwrap(),
+            input_wires_repr: allocated_inputs,
+            input_wire_values: input_values,
             gate_count,
         }
     }
@@ -327,6 +355,38 @@ impl<M: CircuitMode> CircuitOutput<M> for Vec<M::WireValue> {
     }
 }
 
+impl<H: GateHasher> CircuitOutput<GarbleMode<H>> for GarbledWire {
+    type WireRepr = WireId;
+
+    fn decode(wire: Self::WireRepr, cache: &mut GarbleMode<H>) -> Self {
+        cache
+            .lookup_wire(wire)
+            .unwrap_or_else(|| panic!("Can't find {wire:?}"))
+            .clone()
+    }
+}
+
+impl<H: GateHasher> CircuitOutput<EvaluateMode<H>> for EvaluatedWire {
+    type WireRepr = WireId;
+
+    fn decode(wire: Self::WireRepr, cache: &mut EvaluateMode<H>) -> Self {
+        cache
+            .lookup_wire(wire)
+            .unwrap_or_else(|| panic!("Can't find {wire:?}"))
+            .clone()
+    }
+}
+
+impl CircuitOutput<ExecuteMode> for bool {
+    type WireRepr = WireId;
+
+    fn decode(wire: Self::WireRepr, cache: &mut ExecuteMode) -> Self {
+        cache
+            .lookup_wire(wire)
+            .unwrap_or_else(|| panic!("Can't find {wire:?}"))
+    }
+}
+
 #[cfg(test)]
 mod garble_integration_test;
 
@@ -395,7 +455,7 @@ mod exec_test {
                 vec![result]
             });
 
-        assert!(output.output_wires[0])
+        assert!(output.output_value[0])
     }
 
     #[test]
@@ -423,7 +483,7 @@ mod exec_test {
                 )
             });
 
-        assert!(output.output_wires[0])
+        assert!(output.output_value[0])
     }
 
     #[test]
@@ -477,7 +537,7 @@ mod exec_test {
         // level3_temp1 = false XOR false = false
         // level3_temp2 = false AND false = false
         // innermost_result = false XOR false = false
-        assert!(!output.output_wires[0])
+        assert!(!output.output_value[0])
     }
 
     #[test]
@@ -515,7 +575,7 @@ mod exec_test {
                 vec![final_result]
             });
 
-        assert!(!output.output_wires[0]);
+        assert!(!output.output_value[0]);
     }
 
     #[test]
@@ -587,7 +647,7 @@ mod exec_test {
                 vec![result]
             });
 
-        assert!(!output.output_wires[0]); // TRUE AND FALSE = FALSE
+        assert!(!output.output_value[0]); // TRUE AND FALSE = FALSE
     }
 
     #[test]
@@ -616,7 +676,7 @@ mod exec_test {
                 vec![current]
             });
 
-        assert!(output.output_wires[0]);
+        assert!(output.output_value[0]);
 
         let output: StreamingResult<ExecuteMode, _, Vec<bool>> =
             CircuitBuilder::streaming_execute(inputs, 10_000, |root, inputs_wire| {
@@ -638,7 +698,7 @@ mod exec_test {
                 vec![current]
             });
 
-        assert!(!output.output_wires[0]);
+        assert!(!output.output_value[0]);
     }
 
     #[test]
@@ -676,8 +736,8 @@ mod exec_test {
                 vec![child1_output, child2_output]
             });
 
-        assert!(output.output_wires[0]); // true AND true = true
-        assert!(!output.output_wires[1]); // false OR false = false
+        assert!(output.output_value[0]); // true AND true = true
+        assert!(!output.output_value[1]); // false OR false = false
     }
 
     #[test]
@@ -719,8 +779,8 @@ mod exec_test {
                 vec![parent_result, child_result]
             });
 
-        assert!(!output.output_wires[0]); // TRUE AND FALSE = FALSE
-        assert!(output.output_wires[1]); // TRUE OR FALSE = TRUE
+        assert!(!output.output_value[0]); // TRUE AND FALSE = FALSE
+        assert!(output.output_value[1]); // TRUE OR FALSE = TRUE
     }
 
     #[test]
@@ -749,6 +809,6 @@ mod exec_test {
                 vec![current]
             });
 
-        assert!(output.output_wires[0]); // Should still be true after 1000 AND operations with TRUE
+        assert!(output.output_value[0]); // Should still be true after 1000 AND operations with TRUE
     }
 }
