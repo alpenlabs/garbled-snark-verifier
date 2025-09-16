@@ -32,6 +32,21 @@ fn format_number(n: u64) -> String {
     }
 }
 
+// Add thousand separators to numbers
+fn format_with_commas(n: u64) -> String {
+    let s = n.to_string();
+    let chars: Vec<char> = s.chars().collect();
+    let mut result = String::new();
+
+    for (i, c) in chars.iter().enumerate() {
+        if i > 0 && (chars.len() - i) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(*c);
+    }
+    result
+}
+
 /// Circuit size parameter k, where constraints = 2^k
 const K: usize = 6; // match main branch default
 
@@ -130,4 +145,23 @@ fn main() {
         println!("total:    {}", total_gates);
         println!("verified: {}", verified);
     }
+
+        // Print detailed gate count breakdown
+        let gc = &result.gate_count;
+        println!("Gate Count Breakdown:");
+        println!("And         {:>15}", format_with_commas(gc.0[0]));
+        println!("Nand        {:>15}", format_with_commas(gc.0[1]));
+        println!("Nimp        {:>15}", format_with_commas(gc.0[2]));
+        println!("Imp         {:>15}", format_with_commas(gc.0[3]));
+        println!("Ncimp       {:>15}", format_with_commas(gc.0[4]));
+        println!("Cimp        {:>15}", format_with_commas(gc.0[5]));
+        println!("Nor         {:>15}", format_with_commas(gc.0[6]));
+        println!("Or          {:>15}", format_with_commas(gc.0[7]));
+        println!("Xor         {:>15}", format_with_commas(gc.0[8]));
+        println!("Xnor        {:>15}", format_with_commas(gc.0[9]));
+        println!("Not         {:>15}", format_with_commas(gc.0[10]));
+        println!();
+        println!("Non-Free    {:>15}", format_with_commas(gc.nonfree_gate_count()));
+        println!("Free        {:>15}", format_with_commas(gc.0[8] + gc.0[9])); // Xor + Xnor
+        println!("Total       {:>15}", format_with_commas(gc.total_gate_count()));
 }
