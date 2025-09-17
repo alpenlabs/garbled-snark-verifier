@@ -1,329 +1,205 @@
-use crate::{bag::*, core::utils::bit_to_usize};
-use std::ops::{Add, AddAssign};
+use std::fmt;
 
-// Except Xor, Xnor and Not, each enum's bitmask represent the boolean operation ((a XOR bit_2) AND (b XOR bit_1)) XOR bit_0
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum GateType {
-    And = 0,
-    Nand = 1,
-    Nimp = 2,
-    Imp = 3, // a => b
-    Ncimp = 4,
-    Cimp = 5, // b => a
-    Nor = 6,
-    Or = 7,
-    Xor,
-    Xnor,
-    Not,
-}
+pub use crate::GateType;
+use crate::{WireId, circuit::TRUE_WIRE};
 
-// only for AND variants
-impl TryFrom<u8> for GateType {
-    type Error = ();
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(GateType::And),
-            1 => Ok(GateType::Nand),
-            2 => Ok(GateType::Nimp),
-            3 => Ok(GateType::Imp),
-            4 => Ok(GateType::Ncimp),
-            5 => Ok(GateType::Cimp),
-            6 => Ok(GateType::Nor),
-            7 => Ok(GateType::Or),
-            _ => Err(()),
-        }
-    }
-}
-
-const GATE_TYPE_COUNT: usize = 11;
-
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Gate {
-    pub wire_a: Wirex,
-    pub wire_b: Wirex,
-    pub wire_c: Wirex,
+    pub wire_a: WireId,
+    pub wire_b: WireId,
+    pub wire_c: WireId,
     pub gate_type: GateType,
 }
 
+impl fmt::Display for Gate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{:?} {} {} {}",
+            &self.gate_type, self.wire_a, self.wire_b, self.wire_c
+        )
+    }
+}
+
 impl Gate {
-    pub fn new(wire_a: Wirex, wire_b: Wirex, wire_c: Wirex, gate_type: GateType) -> Self {
+    #[must_use]
+    pub fn new(t: GateType, a: WireId, b: WireId, c: WireId) -> Self {
+        Self {
+            wire_a: a,
+            wire_b: b,
+            wire_c: c,
+            gate_type: t,
+        }
+    }
+
+    #[must_use]
+    pub fn and(wire_a: WireId, wire_b: WireId, wire_c: WireId) -> Self {
         Self {
             wire_a,
             wire_b,
             wire_c,
-            gate_type,
+            gate_type: GateType::And,
         }
     }
 
-    pub fn and(wire_a: Wirex, wire_b: Wirex, wire_c: Wirex) -> Self {
-        Self::new(wire_a, wire_b, wire_c, GateType::And)
-    }
-
-    pub fn nand(wire_a: Wirex, wire_b: Wirex, wire_c: Wirex) -> Self {
-        Self::new(wire_a, wire_b, wire_c, GateType::Nand)
-    }
-
-    pub fn nimp(wire_a: Wirex, wire_b: Wirex, wire_c: Wirex) -> Self {
-        Self::new(wire_a, wire_b, wire_c, GateType::Nimp)
-    }
-
-    pub fn imp(wire_a: Wirex, wire_b: Wirex, wire_c: Wirex) -> Self {
-        Self::new(wire_a, wire_b, wire_c, GateType::Imp)
-    }
-
-    pub fn ncimp(wire_a: Wirex, wire_b: Wirex, wire_c: Wirex) -> Self {
-        Self::new(wire_a, wire_b, wire_c, GateType::Ncimp)
-    }
-
-    pub fn cimp(wire_a: Wirex, wire_b: Wirex, wire_c: Wirex) -> Self {
-        Self::new(wire_a, wire_b, wire_c, GateType::Cimp)
-    }
-
-    pub fn nor(wire_a: Wirex, wire_b: Wirex, wire_c: Wirex) -> Self {
-        Self::new(wire_a, wire_b, wire_c, GateType::Nor)
-    }
-
-    pub fn or(wire_a: Wirex, wire_b: Wirex, wire_c: Wirex) -> Self {
-        Self::new(wire_a, wire_b, wire_c, GateType::Or)
-    }
-
-    pub fn xor(wire_a: Wirex, wire_b: Wirex, wire_c: Wirex) -> Self {
-        Self::new(wire_a, wire_b, wire_c, GateType::Xor)
-    }
-
-    pub fn xnor(wire_a: Wirex, wire_b: Wirex, wire_c: Wirex) -> Self {
-        Self::new(wire_a, wire_b, wire_c, GateType::Xnor)
-    }
-
-    pub fn not(wire_a: Wirex, wire_c: Wirex) -> Self {
-        Self::new(wire_a.clone(), wire_a, wire_c, GateType::Not)
-    }
-
-    //((a XOR f_0) AND (b XOR f_1)) XOR f_2
-    pub fn and_variant(wire_a: Wirex, wire_b: Wirex, wire_c: Wirex, f: [u8; 3]) -> Self {
-        let gate_index = (f[0] << 2) | (f[1] << 1) | f[2];
-        let gate_type = match GateType::try_from(gate_index) {
-            Ok(gt) => gt,
-            Err(_) => panic!("Invalid gate type index: {}", gate_index),
-        };
-        Self::new(wire_a, wire_b, wire_c, gate_type)
-    }
-
-    pub fn f(&self) -> fn(bool, bool) -> bool {
-        match self.gate_type {
-            GateType::And => |a, b| a & b,
-            GateType::Nand => |a, b| !(a & b),
-
-            GateType::Nimp => |a, b| a & !b,
-            GateType::Imp => |a, b| !a | b,
-
-            GateType::Ncimp => |a, b| !a & b,
-            GateType::Cimp => |a, b| !b | a,
-
-            GateType::Nor => |a, b| !(a | b),
-            GateType::Or => |a, b| a | b,
-
-            GateType::Xor => |a, b| a ^ b,
-            GateType::Xnor => |a, b| !(a ^ b),
-
-            GateType::Not => |a, _| !a,
+    #[must_use]
+    pub fn nand(wire_a: WireId, wire_b: WireId, wire_c: WireId) -> Self {
+        Self {
+            wire_a,
+            wire_b,
+            wire_c,
+            gate_type: GateType::Nand,
         }
     }
 
-    pub fn evaluate(&mut self) {
-        self.wire_c.borrow_mut().set((self.f())(
-            self.wire_a.borrow().get_value(),
-            self.wire_b.borrow().get_value(),
-        ));
-    }
-
-    pub fn garbled(&self) -> Vec<S> {
-        [(false, false), (true, false), (false, true), (true, true)]
-            .iter()
-            .map(|(i, j)| {
-                let k = (self.f())(*i, *j);
-                let a = self.wire_a.borrow().select(*i);
-                let b = self.wire_b.borrow().select(*j);
-                let c = self.wire_c.borrow().select(k);
-                S::hash_together(a, b) + c.neg()
-            })
-            .collect()
-    }
-
-    pub fn check_garble(&self, garble: Vec<S>, bit: bool) -> (bool, S) {
-        let a = self.wire_a.borrow().get_label();
-        let b = self.wire_b.borrow().get_label();
-        let index = bit_to_usize(self.wire_a.borrow().get_value())
-            + 2 * bit_to_usize(self.wire_b.borrow().get_value());
-        let row = garble[index];
-        let c = S::hash_together(a, b) + row.neg();
-        let hc = c.hash();
-        (hc == self.wire_c.borrow().select_hash(bit), c)
-    }
-}
-
-#[derive(Default)]
-pub struct GateCount(pub [u64; GATE_TYPE_COUNT]);
-
-impl Add for GateCount {
-    type Output = Self;
-
-    fn add(self, other: Self) -> Self::Output {
-        let mut result = [0u64; GATE_TYPE_COUNT];
-        for (i, r) in result.iter_mut().enumerate() {
-            *r = self.0[i] + other.0[i];
-        }
-        GateCount(result)
-    }
-}
-
-impl AddAssign for GateCount {
-    fn add_assign(&mut self, other: Self) {
-        for i in 0..GATE_TYPE_COUNT {
-            self.0[i] += other.0[i];
+    #[must_use]
+    pub fn nimp(wire_a: WireId, wire_b: WireId, wire_c: WireId) -> Self {
+        Self {
+            wire_a,
+            wire_b,
+            wire_c,
+            gate_type: GateType::Nimp,
         }
     }
-}
 
-impl GateCount {
-    pub fn zero() -> Self {
-        Self([0; GATE_TYPE_COUNT])
-    }
-
-    pub fn total_gate_count(&self) -> u64 {
-        let mut sum = 0u64;
-        for x in self.0 {
-            sum += x;
+    #[must_use]
+    pub fn imp(wire_a: WireId, wire_b: WireId, wire_c: WireId) -> Self {
+        Self {
+            wire_a,
+            wire_b,
+            wire_c,
+            gate_type: GateType::Imp,
         }
-        sum
     }
 
-    fn and_variants_count(&self) -> u64 {
-        let mut sum = 0u64;
-        for x in &self.0[0..8] {
-            sum += x;
+    #[must_use]
+    pub fn ncimp(wire_a: WireId, wire_b: WireId, wire_c: WireId) -> Self {
+        Self {
+            wire_a,
+            wire_b,
+            wire_c,
+            gate_type: GateType::Ncimp,
         }
-        sum
     }
 
-    pub fn nonfree_gate_count(&self) -> u64 {
-        self.and_variants_count()
+    #[must_use]
+    pub fn cimp(wire_a: WireId, wire_b: WireId, wire_c: WireId) -> Self {
+        Self {
+            wire_a,
+            wire_b,
+            wire_c,
+            gate_type: GateType::Cimp,
+        }
     }
 
-    fn xor_variants_count(&self) -> u64 {
-        self.0[GateType::Xor as usize] + self.0[GateType::Xnor as usize]
+    #[must_use]
+    pub fn nor(wire_a: WireId, wire_b: WireId, wire_c: WireId) -> Self {
+        Self {
+            wire_a,
+            wire_b,
+            wire_c,
+            gate_type: GateType::Nor,
+        }
     }
 
-    pub fn print(&self) {
-        println!("{:?}", self.0);
-        println!("{:<15}{:>11}", "and variants:", self.and_variants_count());
-        println!("{:<15}{:>11}", "xor variants:", self.xor_variants_count());
-        println!("{:<15}{:>11}", "not:", self.0[GateType::Not as usize]);
-        println!("{:<15}{:>11}", "total:", self.total_gate_count());
-        println!()
-        //println!("nonfree:       {:?}\n", self.nonfree_gate_count()); //equals to and variants
+    #[must_use]
+    pub fn or(wire_a: WireId, wire_b: WireId, wire_c: WireId) -> Self {
+        Self {
+            wire_a,
+            wire_b,
+            wire_c,
+            gate_type: GateType::Or,
+        }
     }
 
-    pub fn and_count(&self) -> u64 {
-        self.0[GateType::And as usize]
+    #[must_use]
+    pub fn xor(wire_a: WireId, wire_b: WireId, wire_c: WireId) -> Self {
+        Self {
+            wire_a,
+            wire_b,
+            wire_c,
+            gate_type: GateType::Xor,
+        }
     }
 
-    pub fn nand_count(&self) -> u64 {
-        self.0[GateType::Nand as usize]
+    #[must_use]
+    pub fn xnor(wire_a: WireId, wire_b: WireId, wire_c: WireId) -> Self {
+        Self {
+            wire_a,
+            wire_b,
+            wire_c,
+            gate_type: GateType::Xnor,
+        }
     }
 
-    pub fn nimp_count(&self) -> u64 {
-        self.0[GateType::Nimp as usize]
+    #[must_use]
+    pub fn not(wire_a: &mut WireId) -> Self {
+        let wire_a = *wire_a;
+        Self {
+            wire_a,
+            wire_b: wire_a,
+            wire_c: wire_a,
+            gate_type: GateType::Not,
+        }
     }
 
-    pub fn imp_count(&self) -> u64 {
-        self.0[GateType::Imp as usize]
+    #[must_use]
+    pub fn not_with_xor(wire_a: WireId, wire_c: WireId) -> Self {
+        Self {
+            wire_a,
+            wire_b: TRUE_WIRE,
+            wire_c,
+            gate_type: GateType::Xor,
+        }
     }
 
-    pub fn ncimp_count(&self) -> u64 {
-        self.0[GateType::Ncimp as usize]
+    /// Creates an AND-variant gate with configurable boolean function.                                                                                      │ │
+    ///                                                                                                                                                      │ │
+    /// This function implements the formula: `((a XOR f[0]) AND (b XOR f[1])) XOR f[2]`                                                                     │ │
+    /// where the 3-bit encoding `f` determines which of the 8 AND-variant gate types to create.                                                             │ │
+    ///                                                                                                                                                      │ │
+    /// # Arguments                                                                                                                                          │ │
+    ///                                                                                                                                                      │ │
+    /// * `wire_a` - First input wire                                                                                                                        │ │
+    /// * `wire_b` - Second input wire                                                                                                                       │ │
+    /// * `wire_c` - Output wire                                                                                                                             │ │
+    /// * `f` - 3-bit encoding array `[f0, f1, f2]` that determines the gate type:                                                                           │ │
+    ///   - `[0,0,0]` → AND gate                                                                                                                             │ │
+    ///   - `[0,0,1]` → NAND gate                                                                                                                            │ │
+    ///   - `[0,1,0]` → NIMP gate (A AND NOT B)                                                                                                              │ │
+    ///   - `[0,1,1]` → IMP gate (A implies B)                                                                                                               │ │
+    ///   - `[1,0,0]` → NCIMP gate (NOT A AND B)                                                                                                             │ │
+    ///   - `[1,0,1]` → CIMP gate (B implies A)                                                                                                              │ │
+    ///   - `[1,1,0]` → NOR gate                                                                                                                             │ │
+    ///   - `[1,1,1]` → OR gate                                                                                                                              │ │
+    ///
+    /// # Returns                                                                                                                                            │ │
+    ///                                                                                                                                                      │ │
+    /// A new `Gate` instance with the specified wires and gate type.                                                                                        │ │
+    #[must_use]
+    pub fn and_variant(a: WireId, b: WireId, c: WireId, f: [bool; 3]) -> Self {
+        Self::new(
+            match f {
+                [false, false, false] => GateType::And,
+                [false, false, true] => GateType::Nand,
+                [false, true, false] => GateType::Nimp,
+                [false, true, true] => GateType::Imp,
+                [true, false, false] => GateType::Ncimp,
+                [true, false, true] => GateType::Cimp,
+                [true, true, false] => GateType::Nor,
+                [true, true, true] => GateType::Or,
+            },
+            a,
+            b,
+            c,
+        )
     }
 
-    pub fn cimp_count(&self) -> u64 {
-        self.0[GateType::Cimp as usize]
+    pub fn is_free(&self) -> bool {
+        self.gate_type.is_free()
     }
 
-    pub fn nor_count(&self) -> u64 {
-        self.0[GateType::Nor as usize]
-    }
-
-    pub fn or_count(&self) -> u64 {
-        self.0[GateType::Or as usize]
-    }
-
-    pub fn xor_count(&self) -> u64 {
-        self.0[GateType::Xor as usize]
-    }
-
-    pub fn xnor_count(&self) -> u64 {
-        self.0[GateType::Xnor as usize]
-    }
-
-    pub fn not_count(&self) -> u64 {
-        self.0[GateType::Not as usize]
-    }
-}
-
-// these are here to speed up tests
-impl GateCount {
-    pub fn msm_montgomery() -> Self {
-        Self([
-            40952275, 39265860, 0, 0, 29750, 19632930, 0, 89650, 125020525, 89700, 210275,
-        ])
-    }
-
-    pub fn fq12_square_montgomery() -> Self {
-        Self([
-            3234570, 229616, 0, 0, 1640, 114808, 0, 111068, 9690504, 108020, 132452,
-        ])
-    }
-
-    pub fn fq12_cyclotomic_square_montgomery() -> Self {
-        Self([
-            1921672, 100076, 0, 0, 953, 50038, 0, 53251, 5790700, 53251, 62909,
-        ])
-    }
-
-    pub fn fq12_mul_montgomery() -> Self {
-        Self([
-            4836448, 324104, 0, 0, 2420, 162052, 0, 155932, 14506687, 151360, 187163,
-        ])
-    }
-
-    pub fn fq12_inverse_montgomery() -> Self {
-        Self([
-            14828696, 3327400, 645668, 0, 327459, 1663700, 0, 477163, 39787000, 474370, 498290,
-        ])
-    }
-
-    pub fn double_in_place_montgomery() -> Self {
-        Self([
-            2414471, 48260, 0, 0, 979, 24130, 0, 26095, 7548712, 26095, 35520,
-        ])
-    }
-
-    pub fn add_in_place_montgomery() -> Self {
-        Self([
-            3828958, 58420, 0, 0, 1669, 29210, 0, 33275, 11650147, 33275, 48528,
-        ])
-    }
-
-    pub fn ell_montgomery() -> Self {
-        Self([
-            4486968, 107696, 0, 0, 2018, 53848, 0, 59246, 13625157, 59246, 78199,
-        ])
-    }
-
-    pub fn ell_by_constant_montgomery() -> Self {
-        Self([
-            4098864, 105664, 0, 0, 1374, 52832, 0, 58734, 13580727, 58734, 77179,
-        ])
+    pub fn execute(&self, a: bool, b: bool) -> bool {
+        self.gate_type.f()(a, b)
     }
 }
