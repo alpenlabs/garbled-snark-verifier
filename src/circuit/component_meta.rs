@@ -32,11 +32,8 @@ use log::{debug, trace};
 use crate::{
     CircuitContext, Gate, WireId,
     circuit::{
-        CircuitInput,
-        streaming::{
-            CircuitMode, FALSE_WIRE, TRUE_WIRE, WiresObject, component_key::ComponentKey,
-            into_wire_list::FromWires,
-        },
+        CircuitInput, CircuitMode, FALSE_WIRE, TRUE_WIRE, WiresObject, component_key::ComponentKey,
+        into_wire_list::FromWires,
     },
     storage::Credits,
 };
@@ -328,14 +325,7 @@ impl CircuitMode for Empty {
 
     fn feed_wire(&mut self, _wire: WireId, _value: Self::WireValue) {}
 
-    fn evaluate_gate(
-        &mut self,
-        _gate: &Gate,
-        _a: Self::WireValue,
-        _b: Self::WireValue,
-    ) -> Self::WireValue {
-        todo!()
-    }
+    fn evaluate_gate(&mut self, _gate: &Gate) {}
 
     fn add_credits(&mut self, _wires: &[WireId], _credits: NonZero<Credits>) {}
 }

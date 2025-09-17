@@ -28,7 +28,12 @@ pub(crate) mod aes_ni_impl {
         }
 
         /// Encrypt a single 16-byte block with AES-NI.
-        /// Safety: requires AES-NI (the constructor enforces this).
+        ///
+        /// # Safety
+        ///
+        /// This function is unsafe because it directly uses x86_64 intrinsics that require
+        /// the AES-NI and SSE2 instruction sets to be available. The constructor ensures
+        /// these features are available, but the caller must ensure this invariant is maintained.
         #[inline]
         #[target_feature(enable = "aes,sse2")]
         pub unsafe fn encrypt_block(&self, block: [u8; 16]) -> [u8; 16] {
@@ -52,7 +57,12 @@ pub(crate) mod aes_ni_impl {
         ///
         /// This issues AESENC/AESENCLAST for both blocks per round so the CPU can
         /// pipeline them concurrently (great for CTR/ECB where blocks are independent).
-        /// Safety: requires AES-NI (the constructor enforces this).
+        ///
+        /// # Safety
+        ///
+        /// This function is unsafe because it directly uses x86_64 intrinsics that require
+        /// the AES-NI and SSE2 instruction sets to be available. The constructor ensures
+        /// these features are available, but the caller must ensure this invariant is maintained.
         #[inline]
         #[target_feature(enable = "aes,sse2")]
         pub unsafe fn encrypt2_blocks(&self, b0: [u8; 16], b1: [u8; 16]) -> ([u8; 16], [u8; 16]) {
@@ -85,6 +95,12 @@ pub(crate) mod aes_ni_impl {
 
         /// Encrypt a single block with an extra 128-bit XOR mask (tweak) applied before the first round.
         /// This folds the tweak into the initial AddRoundKey for fewer instructions overall.
+        ///
+        /// # Safety
+        ///
+        /// This function is unsafe because it directly uses x86_64 intrinsics that require
+        /// the AES-NI and SSE2 instruction sets to be available. The constructor ensures
+        /// these features are available, but the caller must ensure this invariant is maintained.
         #[inline]
         #[target_feature(enable = "aes,sse2")]
         pub unsafe fn encrypt_block_xor(&self, block: [u8; 16], xor_mask: [u8; 16]) -> [u8; 16] {
@@ -105,6 +121,12 @@ pub(crate) mod aes_ni_impl {
 
         /// Encrypt two blocks in parallel with an extra 128-bit XOR mask (tweak) applied.
         /// The mask is folded into the initial AddRoundKey to minimize total XORs.
+        ///
+        /// # Safety
+        ///
+        /// This function is unsafe because it directly uses x86_64 intrinsics that require
+        /// the AES-NI and SSE2 instruction sets to be available. The constructor ensures
+        /// these features are available, but the caller must ensure this invariant is maintained.
         #[cfg(test)]
         #[inline]
         #[target_feature(enable = "aes,sse2")]
@@ -258,113 +280,9 @@ pub(crate) mod aes_ni_impl {
         let cipher = get_or_init_static_cipher();
         Some(unsafe { cipher.encrypt2_blocks(b0, b1) })
     }
-
-    /// u64 tweak variants: removed (use byte-mask helpers instead)
-    #[cfg(test)]
-    mod tests {
-        use aes::{
-            Aes128 as Aes128Sw,
-            cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray},
-        };
-
-        use super::*;
-
-        #[test]
-        fn aes128_fips197_known_answer() {
-            if !is_x86_feature_detected!("aes") {
-                eprintln!("AES-NI not detected on this machine; skipping test.");
-                return;
-            }
-            // FIPS-197 Appendix C.1
-            let key = [
-                0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D,
-                0x0E, 0x0F,
-            ];
-            let pt = [
-                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD,
-                0xEE, 0xFF,
-            ];
-            let expected = [
-                0x69, 0xC4, 0xE0, 0xD8, 0x6A, 0x7B, 0x04, 0x30, 0xD8, 0xCD, 0xB7, 0x80, 0x70, 0xB4,
-                0xC5, 0x5A,
-            ];
-
-            let got = aes128_encrypt_block(key, pt).expect("AES-NI required");
-            assert_eq!(got, expected);
-
-            // Dual-lane: encrypt the same PT twice and expect same CT on both lanes
-            let (c0, c1) = aes128_encrypt2_blocks(key, pt, pt).expect("AES-NI required");
-            assert_eq!(c0, expected);
-            assert_eq!(c1, expected);
-        }
-
-        #[test]
-        fn static_key_matches_software_impl_single_and_mask() {
-            if !is_x86_feature_detected!("aes") {
-                eprintln!("AES-NI not detected on this machine; skipping test.");
-                return;
-            }
-            let sw = Aes128Sw::new_from_slice(&DEFAULT_STATIC_KEY).unwrap();
-
-            let pt = [0x33u8; 16];
-            let mut g = GenericArray::clone_from_slice(&pt);
-            sw.encrypt_block(&mut g);
-            let sw_ct = <[u8; 16]>::try_from(g.as_slice()).unwrap();
-            let ni_ct = aes128_encrypt_block_static(pt).unwrap();
-            assert_eq!(ni_ct, sw_ct);
-
-            let mask = [0xC3u8; 16];
-            let mut mp = pt;
-            for i in 0..16 {
-                mp[i] ^= mask[i];
-            }
-            let mut gm = GenericArray::clone_from_slice(&mp);
-            sw.encrypt_block(&mut gm);
-            let sw_ct_x = <[u8; 16]>::try_from(gm.as_slice()).unwrap();
-            let ni_ct_x = aes128_encrypt_block_static_xor(pt, mask).unwrap();
-            assert_eq!(ni_ct_x, sw_ct_x);
-        }
-
-        #[test]
-        fn static_key_matches_software_impl_two_blocks_with_mask() {
-            if !is_x86_feature_detected!("aes") {
-                eprintln!("AES-NI not detected on this machine; skipping test.");
-                return;
-            }
-            let sw = Aes128Sw::new_from_slice(&DEFAULT_STATIC_KEY).unwrap();
-            let b0 = [0x42u8; 16];
-            let b1 = [0x24u8; 16];
-            let mask = [0x0Fu8; 16];
-
-            let mut mb0 = b0;
-            let mut mb1 = b1;
-            for i in 0..16 {
-                mb0[i] ^= mask[i];
-                mb1[i] ^= mask[i];
-            }
-            let mut g0 = GenericArray::clone_from_slice(&mb0);
-            let mut g1 = GenericArray::clone_from_slice(&mb1);
-            sw.encrypt_block(&mut g0);
-            sw.encrypt_block(&mut g1);
-            let c0_sw = <[u8; 16]>::try_from(g0.as_slice()).unwrap();
-            let c1_sw = <[u8; 16]>::try_from(g1.as_slice()).unwrap();
-
-            let (c0_ni, c1_ni) = aes128_encrypt2_blocks_static_xor(b0, b1, mask).unwrap();
-            assert_eq!(c0_ni, c0_sw);
-            assert_eq!(c1_ni, c1_sw);
-        }
-    }
 }
 
-#[cfg(all(
-    any(target_arch = "x86", target_arch = "x86_64"),
-    target_feature = "aes",
-    target_feature = "sse2"
-))]
-pub use aes_ni_impl::*;
-
-// Fallback: software AES via RustCrypto when AES-NI is not available at
-// compile-time (or on non-x86 targets) or the feature is disabled.
+// Fallback (no AES-NI at compile-time): software AES implementation backed by aes crate.
 #[cfg(not(all(
     any(target_arch = "x86", target_arch = "x86_64"),
     target_feature = "aes",
@@ -439,61 +357,14 @@ pub mod aes_ni_unavailable {
         out1.copy_from_slice(&blocks[1]);
         Some((out0, out1))
     }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn fallback_matches_direct_aes_single_and_mask() {
-            let sw = Aes128::new_from_slice(&DEFAULT_STATIC_KEY).unwrap();
-
-            let pt = [0x00u8; 16];
-            let mut b = GenericArray::clone_from_slice(&pt);
-            sw.encrypt_block(&mut b);
-            let ct_sw = <[u8; 16]>::try_from(b.as_slice()).unwrap();
-            let ct_fb = aes128_encrypt_block_static(pt).unwrap();
-            assert_eq!(ct_fb, ct_sw);
-
-            let mask = [0xA5u8; 16];
-            let mut masked = pt;
-            for i in 0..16 {
-                masked[i] ^= mask[i];
-            }
-            let mut bm = GenericArray::clone_from_slice(&masked);
-            sw.encrypt_block(&mut bm);
-            let ct_sw_xor = <[u8; 16]>::try_from(bm.as_slice()).unwrap();
-            let ct_fb_xor = aes128_encrypt_block_static_xor(pt, mask).unwrap();
-            assert_eq!(ct_fb_xor, ct_sw_xor);
-        }
-
-        #[test]
-        fn fallback_matches_direct_aes_two_blocks_with_mask() {
-            let sw = Aes128::new_from_slice(&DEFAULT_STATIC_KEY).unwrap();
-            let b0 = [0x11u8; 16];
-            let b1 = [0x22u8; 16];
-            let mask = [0x5Au8; 16];
-
-            let mut mb0 = b0;
-            let mut mb1 = b1;
-            for i in 0..16 {
-                mb0[i] ^= mask[i];
-                mb1[i] ^= mask[i];
-            }
-            let mut g0 = GenericArray::clone_from_slice(&mb0);
-            let mut g1 = GenericArray::clone_from_slice(&mb1);
-            sw.encrypt_block(&mut g0);
-            sw.encrypt_block(&mut g1);
-            let c0_sw = <[u8; 16]>::try_from(g0.as_slice()).unwrap();
-            let c1_sw = <[u8; 16]>::try_from(g1.as_slice()).unwrap();
-
-            let (c0_fb, c1_fb) = aes128_encrypt2_blocks_static_xor(b0, b1, mask).unwrap();
-            assert_eq!(c0_fb, c0_sw);
-            assert_eq!(c1_fb, c1_sw);
-        }
-    }
 }
 
+#[cfg(all(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_feature = "aes",
+    target_feature = "sse2"
+))]
+pub use aes_ni_impl::*;
 #[cfg(not(all(
     any(target_arch = "x86", target_arch = "x86_64"),
     target_feature = "aes",

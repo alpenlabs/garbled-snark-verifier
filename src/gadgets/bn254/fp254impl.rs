@@ -9,7 +9,7 @@ use num_traits::{One, Zero};
 use super::super::bigint::{self, BigIntWires};
 use crate::{
     CircuitContext, Gate, WireId,
-    circuit::streaming::{FALSE_WIRE, FromWires, TRUE_WIRE, WiresObject},
+    circuit::{FALSE_WIRE, FromWires, TRUE_WIRE, WiresObject},
     math::montgomery::calculate_montgomery_constants,
 };
 

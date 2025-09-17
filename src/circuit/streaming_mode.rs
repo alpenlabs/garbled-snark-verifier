@@ -4,7 +4,7 @@ use log::{debug, trace};
 
 use crate::{
     CircuitContext, Gate, WireId,
-    circuit::streaming::{
+    circuit::{
         CircuitMode, ComponentMetaBuilder, ComponentTemplatePool, FALSE_WIRE, TRUE_WIRE,
         WiresObject, component_key::ComponentKey, component_meta::ComponentMetaInstance,
         into_wire_list::FromWires,
@@ -76,7 +76,7 @@ impl<M: CircuitMode> StreamingMode<M> {
     }
 
     // Build execution context from collected metadata and encode inputs.
-    pub fn to_root_ctx<I: crate::circuit::streaming::EncodeInput<M>>(
+    pub fn to_root_ctx<I: crate::circuit::EncodeInput<M>>(
         self,
         mode: M,
         input: &I,
@@ -142,15 +142,7 @@ impl<M: CircuitMode> CircuitContext for StreamingMode<M> {
                 assert_ne!(gate.wire_a, WireId::UNREACHABLE);
                 assert_ne!(gate.wire_b, WireId::UNREACHABLE);
 
-                let a = ctx.lookup_wire(gate.wire_a).unwrap();
-                let b = ctx.lookup_wire(gate.wire_b).unwrap();
-
-                if gate.wire_c == WireId::UNREACHABLE {
-                    return;
-                }
-
-                let c_val = ctx.mode.evaluate_gate(&gate, a, b);
-                ctx.feed_wire(gate.wire_c, c_val);
+                ctx.mode.evaluate_gate(&gate);
             }
         }
     }

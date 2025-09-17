@@ -2,18 +2,55 @@ use std::num::NonZero;
 
 use crossbeam::channel;
 
+use super::garble_mode::{GarbledWire, halfgates_garbling};
 use crate::{
-    EvaluatedWire, Gate, S, WireId,
-    circuit::streaming::{CircuitMode, FALSE_WIRE, TRUE_WIRE},
-    core::{
-        gate::garbling::{Blake3Hasher, GateHasher},
-        progress::maybe_log_progress,
-    },
+    Gate, S, WireId,
+    circuit::{CircuitMode, FALSE_WIRE, TRUE_WIRE},
+    core::progress::maybe_log_progress,
+    hashers::{Blake3Hasher, GateHasher},
     storage::{Credits, Storage},
 };
 
 /// Type alias for EvaluateMode with Blake3 hasher (default)
 pub type EvaluateModeBlake3 = EvaluateMode<Blake3Hasher>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvaluatedWire {
+    pub active_label: S,
+    pub value: bool,
+}
+
+impl EvaluatedWire {
+    pub fn empty() -> Self {
+        EvaluatedWire {
+            active_label: S::ZERO,
+            value: false,
+        }
+    }
+
+    pub fn new(active_label: S, value: bool) -> Self {
+        EvaluatedWire {
+            active_label,
+            value,
+        }
+    }
+
+    pub fn new_from_garbled(garbled_wire: &GarbledWire, value: bool) -> Self {
+        EvaluatedWire {
+            active_label: garbled_wire.select(value),
+            value,
+        }
+    }
+}
+
+impl Default for EvaluatedWire {
+    fn default() -> Self {
+        EvaluatedWire {
+            active_label: S::ZERO,
+            value: false,
+        }
+    }
+}
 
 /// Storage representation for evaluated wires
 #[derive(Clone, Debug, Default)]
@@ -108,14 +145,38 @@ impl<H: GateHasher> CircuitMode for EvaluateMode<H> {
         }
     }
 
-    fn evaluate_gate(&mut self, gate: &Gate, a: EvaluatedWire, b: EvaluatedWire) -> EvaluatedWire {
+    fn evaluate_gate(&mut self, gate: &Gate) {
+        // Always consume input credits by looking up A and B.
+        let a = self.lookup_wire(gate.wire_a).unwrap();
+        let b = self.lookup_wire(gate.wire_b).unwrap();
+
         let gate_id = self.next_gate_index();
+
+        // If C is unreachable, skip evaluation and do not advance gate index.
+        if gate.wire_c == WireId::UNREACHABLE {
+            return;
+        }
 
         maybe_log_progress("evaluated", gate_id);
 
-        gate.evaluate::<H>(gate_id, &a, &b, || {
-            self.consume_ciphertext(gate_id).unwrap()
-        })
+        let expected_label = halfgates_garbling::degarble_gate::<H>(
+            gate.gate_type,
+            || self.consume_ciphertext(gate_id).unwrap(),
+            a.active_label,
+            a.value,
+            b.active_label,
+            gate_id,
+        );
+
+        // Re-implement evaluation bound to streaming mode and raw labels.
+        let expected_value = (gate.gate_type.f())(a.value, b.value);
+
+        let c = EvaluatedWire {
+            active_label: expected_label,
+            value: expected_value,
+        };
+
+        self.feed_wire(gate.wire_c, c);
     }
 
     fn feed_wire(&mut self, wire_id: crate::WireId, value: Self::WireValue) {

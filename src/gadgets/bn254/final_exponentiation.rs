@@ -140,7 +140,7 @@ mod tests {
     use super::*;
     use crate::{
         WireId,
-        circuit::streaming::{
+        circuit::{
             CircuitBuilder, CircuitInput, CircuitMode, CircuitOutput, EncodeInput, StreamingResult,
             WiresObject, modes::ExecuteMode,
         },

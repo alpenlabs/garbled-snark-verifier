@@ -5,17 +5,17 @@ use crate::{Gate, WireId, storage::Credits};
 mod execute_mode;
 pub use execute_mode::{ExecuteMode, OptionalBoolean};
 // Back-compat alias used widely in tests/gadgets
-pub type Execute = crate::circuit::streaming::StreamingMode<ExecuteMode>;
+pub type Execute = crate::circuit::StreamingMode<ExecuteMode>;
 
 // Collapse thin wrappers; tests live in mode files.
 
-mod garble_mode;
-pub use garble_mode::{GarbleMode, GarbleModeBlake3, OptionalGarbledWire};
+pub mod garble_mode;
+pub use garble_mode::{GarbleMode, GarbleModeBlake3, GarbledWire};
 
 // Collapse thin wrappers; tests live in mode files.
 
 mod evaluate_mode;
-pub use evaluate_mode::{EvaluateMode, EvaluateModeBlake3, OptionalEvaluatedWire};
+pub use evaluate_mode::{EvaluateMode, EvaluateModeBlake3, EvaluatedWire, OptionalEvaluatedWire};
 
 /// Execution backends for the streaming circuit.
 ///
@@ -30,12 +30,11 @@ pub trait CircuitMode: Sized + fmt::Debug {
 
     fn true_value(&self) -> Self::WireValue;
 
-    fn evaluate_gate(
-        &mut self,
-        gate: &Gate,
-        a: Self::WireValue,
-        b: Self::WireValue,
-    ) -> Self::WireValue;
+    // Evaluate a single gate by performing: lookup A, lookup B, optional evaluate, and feed C.
+    // Implementations must mirror existing behavior:
+    // - Always consume input credits via lookups of A and B.
+    // - If C is UNREACHABLE, skip evaluation/feeding and do not advance gate-index/progress.
+    fn evaluate_gate(&mut self, gate: &Gate);
 
     fn allocate_wire(&mut self, credits: Credits) -> WireId;
 
