@@ -610,6 +610,7 @@ dependencies = [
  "rand",
  "rand_chacha",
  "rayon",
+ "serde",
  "serde_json",
  "slab",
  "test-log",
