@@ -9,18 +9,19 @@ use ark_ff::{AdditiveGroup, Field};
 use circuit_component_macro::component;
 
 use crate::{
-    CircuitContext, Fq2Wire, WireId,
+    CircuitContext, Fp254Impl, Fq2Wire, WireId,
     circuit::{
         CircuitInput,
-        streaming::{CircuitMode, EncodeInput, WiresObject},
+        streaming::{CircuitMode, EncodeInput, FALSE_WIRE, WiresObject},
     },
     gadgets::{
-        bigint,
+        bigint::{self, BigIntWires},
         bn254::{
             G2Projective, final_exponentiation::final_exponentiation_montgomery, fq::Fq,
             fq12::Fq12, fr::Fr, g1::G1Projective,
             pairing::multi_miller_loop_groth16_evaluate_montgomery_fast,
         },
+        hash::blake3::{InputMessage, InputMessageWires, blake3_hash},
     },
 };
 
@@ -259,6 +260,33 @@ pub fn groth16_verify_compressed<C: CircuitContext>(
     groth16_verify(circuit, public, &a, &b, &c, vk)
 }
 
+/// Convenience wrapper: verify using compressed A and C (x, y_flag). B remains host-provided `G2Affine`.
+#[component(offcircuit_args = "vk")]
+pub fn groth16_verify_compressed_over_raw<const N: usize, C: CircuitContext>(
+    circuit: &mut C,
+    public: &InputMessageWires<N>,
+    compressed_a: &CompressedG1Wires,
+    compressed_b: &CompressedG2Wires,
+    compressed_c: &CompressedG1Wires,
+    vk: &ark_groth16::VerifyingKey<ark_bn254::Bn254>,
+) -> crate::WireId {
+    let a = decompress_g1_from_compressed(circuit, compressed_a);
+    let b = decompress_g2_from_compressed(circuit, compressed_b);
+    let c = decompress_g1_from_compressed(circuit, compressed_c);
+
+    let mut out_hash = blake3_hash(circuit, *public).value;
+    out_hash[0][5] = FALSE_WIRE;
+    out_hash[0][6] = FALSE_WIRE;
+    out_hash[0][7] = FALSE_WIRE;
+    out_hash.reverse();
+    let out_hash: Vec<WireId> = out_hash.into_iter().flatten().collect();
+    let out_hash = BigIntWires {
+        bits: out_hash[0..Fr::N_BITS].to_vec(),
+    };
+    let hash_fr = Fr(out_hash);
+    groth16_verify(circuit, &[hash_fr], &a, &b, &c, vk)
+}
+
 #[derive(Debug, Clone)]
 pub struct Groth16ExecInput {
     pub public: Vec<ark_bn254::Fr>,
@@ -453,10 +481,104 @@ impl<M: CircuitMode<WireValue = bool>> EncodeInput<M> for Groth16ExecInputCompre
     }
 }
 
+pub struct Groth16ExecRawInputCompressedRaw<const N: usize> {
+    pub public: InputMessage<N>,
+    pub a: ark_bn254::G1Projective,
+    pub b: ark_bn254::G2Projective,
+    pub c: ark_bn254::G1Projective,
+}
+
+#[derive(Debug)]
+pub struct CompressedGroth16ExecInputRawWires<const N: usize> {
+    pub public: InputMessageWires<N>,
+    pub a: CompressedG1Wires,
+    pub b: CompressedG2Wires,
+    pub c: CompressedG1Wires,
+}
+
+impl<const N: usize> CircuitInput for Groth16ExecRawInputCompressedRaw<N> {
+    type WireRepr = CompressedGroth16ExecInputRawWires<N>;
+
+    fn allocate(&self, mut issue: impl FnMut() -> WireId) -> Self::WireRepr {
+        CompressedGroth16ExecInputRawWires {
+            public: InputMessageWires::new(&mut issue),
+            a: CompressedG1Wires::new(&mut issue),
+            b: CompressedG2Wires::new(&mut issue),
+            c: CompressedG1Wires::new(&mut issue),
+        }
+    }
+    fn collect_wire_ids(repr: &Self::WireRepr) -> Vec<crate::WireId> {
+        let mut ids = Vec::new();
+        ids.extend(repr.public.to_wires_vec());
+        ids.extend(repr.a.to_wires_vec());
+        ids.extend(repr.b.to_wires_vec());
+        ids.extend(repr.c.to_wires_vec());
+        ids
+    }
+}
+
+impl<const N: usize, M: CircuitMode<WireValue = bool>> EncodeInput<M>
+    for Groth16ExecRawInputCompressedRaw<N>
+{
+    fn encode(&self, repr: &CompressedGroth16ExecInputRawWires<N>, cache: &mut M) {
+        // Encode public scalars
+        self.public.encode(&repr.public, cache);
+
+        // Compute compression from standard affine coords; feed Montgomery x + flag
+        let a_aff_std = self.a.into_affine();
+        let b_aff_std = self.b.into_affine();
+        let c_aff_std = self.c.into_affine();
+
+        let a_flag = (a_aff_std.y.square())
+            .sqrt()
+            .expect("y^2 must be QR")
+            .eq(&a_aff_std.y);
+        let b_flag = (b_aff_std.y.square())
+            .sqrt()
+            .expect("y^2 must be QR in Fq2")
+            .eq(&b_aff_std.y);
+        let c_flag = (c_aff_std.y.square())
+            .sqrt()
+            .expect("y^2 must be QR")
+            .eq(&c_aff_std.y);
+
+        let a_x_m = Fq::as_montgomery(a_aff_std.x);
+        let b_x_m = Fq2Wire::as_montgomery(b_aff_std.x);
+        let c_x_m = Fq::as_montgomery(c_aff_std.x);
+
+        // Feed A.x (Montgomery) bits and flag
+        let a_x_fn = Fq::get_wire_bits_fn(&repr.a.x_m, &a_x_m).unwrap();
+        for &wire_id in repr.a.x_m.iter() {
+            if let Some(bit) = a_x_fn(wire_id) {
+                cache.feed_wire(wire_id, bit);
+            }
+        }
+        cache.feed_wire(repr.a.y_flag, a_flag);
+
+        // Feed B.x (Montgomery) bits and flag (Fq2 as c0||c1)
+        let b_x_fn = Fq2Wire::get_wire_bits_fn(&repr.b.p, &b_x_m).unwrap();
+        for &wire_id in repr.b.p.iter() {
+            if let Some(bit) = b_x_fn(wire_id) {
+                cache.feed_wire(wire_id, bit);
+            }
+        }
+        cache.feed_wire(repr.b.y_flag, b_flag);
+
+        // Feed C.x (Montgomery) bits and flag
+        let c_x_fn = Fq::get_wire_bits_fn(&repr.c.x_m, &c_x_m).unwrap();
+        for &wire_id in repr.c.x_m.iter() {
+            if let Some(bit) = c_x_fn(wire_id) {
+                cache.feed_wire(wire_id, bit);
+            }
+        }
+        cache.feed_wire(repr.c.y_flag, c_flag);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ark_ec::{AffineRepr, CurveGroup, PrimeGroup};
-    use ark_ff::UniformRand;
+    use ark_ff::{PrimeField, UniformRand};
     use ark_groth16::Groth16;
     use ark_relations::{
         lc,
@@ -798,14 +920,19 @@ mod tests {
     fn test_groth16_verify_compressed_true_small() {
         let k = 4; // circuit size; pairing cost dominates anyway
         let mut rng = ChaCha20Rng::seed_from_u64(33333);
+        let c_val = ark_bn254::Fr::rand(&mut rng);
+        let b = ark_bn254::Fr::rand(&mut rng);
+        let binv = b.inverse().unwrap();
+        let a = c_val * binv;
+
         let circuit = DummyCircuit::<ark_bn254::Fr> {
-            a: Some(ark_bn254::Fr::rand(&mut rng)),
-            b: Some(ark_bn254::Fr::rand(&mut rng)),
+            a: Some(a),
+            b: Some(b),
             num_variables: 8,
             num_constraints: 1 << k,
         };
         let (pk, vk) = Groth16::<ark_bn254::Bn254>::setup(circuit, &mut rng).unwrap();
-        let c_val = circuit.a.unwrap() * circuit.b.unwrap();
+        //let c_val = circuit.a.unwrap() * circuit.b.unwrap();
         let proof = Groth16::<ark_bn254::Bn254>::prove(&pk, circuit, &mut rng).unwrap();
 
         let inputs = Groth16ExecInputCompressed(Groth16ExecInput {
@@ -818,6 +945,67 @@ mod tests {
         let out: crate::circuit::streaming::StreamingResult<_, _, Vec<bool>> =
             CircuitBuilder::streaming_execute(inputs, 80_000, |ctx, wires| {
                 let ok = groth16_verify_compressed(
+                    ctx,
+                    &wires.public,
+                    &wires.a,
+                    &wires.b,
+                    &wires.c,
+                    &vk,
+                );
+                vec![ok]
+            });
+
+        assert!(out.output_value[0]);
+    }
+
+    // verify groth16 proof end-to-end
+    // use raw public input to generate groth16-public-input
+    // meant to mimick how public inputs are handled by zkvms
+    #[test]
+    fn test_groth16_verify_compressed_true_small_for_raw_public_input() {
+        let mut rng = ChaCha20Rng::seed_from_u64(33333);
+
+        // prover computes groth-public-input directly using raw_public_input
+        let raw_public_input: u64 = u64::rand(&mut rng);
+        let raw_public_input = raw_public_input.to_le_bytes();
+        let raw_public_input_hash = blake3::hash(&raw_public_input);
+        let mut raw_public_input_hash = *raw_public_input_hash.as_bytes();
+        raw_public_input_hash[0] &= 0b00011111; // mask top 3 bits to fit within scalar field
+        let c_val = ark_bn254::Fr::from_be_bytes_mod_order(&raw_public_input_hash);
+
+        let b = ark_bn254::Fr::rand(&mut rng);
+        let binv = b.inverse().unwrap();
+        let a = c_val * binv; // should satisfy constraint: a * b = c
+
+        let k = 4;
+        let circuit = DummyCircuit::<ark_bn254::Fr> {
+            a: Some(a),
+            b: Some(b),
+            num_variables: 8,
+            num_constraints: 1 << k,
+        };
+        let (pk, vk) = Groth16::<ark_bn254::Bn254>::setup(circuit, &mut rng).unwrap();
+
+        // verifier computes groth-public-input directly using raw_public_input
+        // let raw_public_input_hash = blake3::hash(&raw_public_input);
+        // let mut raw_public_input_hash = *raw_public_input_hash.as_bytes();
+        // raw_public_input_hash[0] &= 0b00011111; // mask top 3 bits to fit within scalar field
+        //let c_val = ark_bn254::Fr::from_be_bytes_mod_order(&raw_public_input_hash);
+
+        let proof = Groth16::<ark_bn254::Bn254>::prove(&pk, circuit, &mut rng).unwrap();
+
+        let inputs = Groth16ExecRawInputCompressedRaw {
+            public: InputMessage {
+                byte_arr: raw_public_input,
+            },
+            a: proof.a.into_group(),
+            b: proof.b.into_group(),
+            c: proof.c.into_group(),
+        };
+
+        let out: crate::circuit::streaming::StreamingResult<_, _, Vec<bool>> =
+            CircuitBuilder::streaming_execute(inputs, 80_000, |ctx, wires| {
+                let ok = groth16_verify_compressed_over_raw(
                     ctx,
                     &wires.public,
                     &wires.a,
