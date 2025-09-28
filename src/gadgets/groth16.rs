@@ -21,7 +21,7 @@ use crate::{
             fq12::Fq12, fr::Fr, g1::G1Projective,
             pairing::multi_miller_loop_groth16_evaluate_montgomery_fast,
         },
-        hash::blake3::{InputMessage, InputMessageWires, blake3_hash},
+        hash::blake3::{HashOutputWires, InputMessage, InputMessageWires, blake3_hash},
     },
 };
 
@@ -260,7 +260,25 @@ pub fn groth16_verify_compressed<C: CircuitContext>(
     groth16_verify(circuit, public, &a, &b, &c, vk)
 }
 
+// convert from hash to scalar field element(s)
+// one way is to truncate the top N bits to make the hash fit in the scalar field
+fn convert_hash_to_bigint_wires(out_hash: HashOutputWires) -> Vec<Fr> {
+    let mut out_hash = out_hash.value;
+    // mask top 3 bits by taking the first byte of hash output and masking its top 3 bit
+    out_hash[0][5] = FALSE_WIRE;
+    out_hash[0][6] = FALSE_WIRE;
+    out_hash[0][7] = FALSE_WIRE;
+    // big endian to little endian ordering of BigIntWires
+    out_hash.reverse();
+    let out_hash: Vec<WireId> = out_hash.into_iter().flatten().collect();
+    let out_hash = BigIntWires {
+        bits: out_hash[0..Fr::N_BITS].to_vec(),
+    };
+    vec![Fr(out_hash)]
+}
+
 /// Convenience wrapper: verify using compressed A and C (x, y_flag). B remains host-provided `G2Affine`.
+/// Take raw public input and convert to scalar field element(s) in-circuit
 #[component(offcircuit_args = "vk")]
 pub fn groth16_verify_compressed_over_raw<const N: usize, C: CircuitContext>(
     circuit: &mut C,
@@ -274,17 +292,11 @@ pub fn groth16_verify_compressed_over_raw<const N: usize, C: CircuitContext>(
     let b = decompress_g2_from_compressed(circuit, compressed_b);
     let c = decompress_g1_from_compressed(circuit, compressed_c);
 
-    let mut out_hash = blake3_hash(circuit, *public).value;
-    out_hash[0][5] = FALSE_WIRE;
-    out_hash[0][6] = FALSE_WIRE;
-    out_hash[0][7] = FALSE_WIRE;
-    out_hash.reverse();
-    let out_hash: Vec<WireId> = out_hash.into_iter().flatten().collect();
-    let out_hash = BigIntWires {
-        bits: out_hash[0..Fr::N_BITS].to_vec(),
-    };
-    let hash_fr = Fr(out_hash);
-    groth16_verify(circuit, &[hash_fr], &a, &b, &c, vk)
+    // convert InputMessage<N> to scalar field elements
+    let out_hash = blake3_hash(circuit, *public);
+    let hash_fr = convert_hash_to_bigint_wires(out_hash);
+
+    groth16_verify(circuit, &hash_fr, &a, &b, &c, vk)
 }
 
 #[derive(Debug, Clone)]
@@ -958,6 +970,12 @@ mod tests {
         assert!(out.output_value[0]);
     }
 
+    fn convert_hash_to_bigint(raw_public_input_hash: blake3::Hash) -> ark_bn254::Fr {
+        let mut raw_public_input_hash = *raw_public_input_hash.as_bytes();
+        raw_public_input_hash[0] &= 0b00011111; // mask top 3 bits to fit within scalar field
+        let c_val = ark_bn254::Fr::from_be_bytes_mod_order(&raw_public_input_hash);
+        c_val
+    }
     // verify groth16 proof end-to-end
     // use raw public input to generate groth16-public-input
     // meant to mimick how public inputs are handled by zkvms
@@ -969,9 +987,7 @@ mod tests {
         let raw_public_input: u64 = u64::rand(&mut rng);
         let raw_public_input = raw_public_input.to_le_bytes();
         let raw_public_input_hash = blake3::hash(&raw_public_input);
-        let mut raw_public_input_hash = *raw_public_input_hash.as_bytes();
-        raw_public_input_hash[0] &= 0b00011111; // mask top 3 bits to fit within scalar field
-        let c_val = ark_bn254::Fr::from_be_bytes_mod_order(&raw_public_input_hash);
+        let c_val = convert_hash_to_bigint(raw_public_input_hash);
 
         let b = ark_bn254::Fr::rand(&mut rng);
         let binv = b.inverse().unwrap();
@@ -985,12 +1001,6 @@ mod tests {
             num_constraints: 1 << k,
         };
         let (pk, vk) = Groth16::<ark_bn254::Bn254>::setup(circuit, &mut rng).unwrap();
-
-        // verifier computes groth-public-input directly using raw_public_input
-        // let raw_public_input_hash = blake3::hash(&raw_public_input);
-        // let mut raw_public_input_hash = *raw_public_input_hash.as_bytes();
-        // raw_public_input_hash[0] &= 0b00011111; // mask top 3 bits to fit within scalar field
-        //let c_val = ark_bn254::Fr::from_be_bytes_mod_order(&raw_public_input_hash);
 
         let proof = Groth16::<ark_bn254::Bn254>::prove(&pk, circuit, &mut rng).unwrap();
 
