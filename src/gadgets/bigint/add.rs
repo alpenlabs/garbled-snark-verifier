@@ -3,7 +3,7 @@ use std::iter;
 use circuit_component_macro::bn_component;
 
 use super::{BigIntWires, BigUint, select};
-use crate::{CircuitContext, Gate, WireId, circuit::streaming::FALSE_WIRE, gadgets::basic};
+use crate::{CircuitContext, Gate, WireId, circuit::FALSE_WIRE, gadgets::basic};
 
 #[bn_component(arity = "a.len() + 1")]
 pub fn add<C: CircuitContext>(circuit: &mut C, a: &BigIntWires, b: &BigIntWires) -> BigIntWires {
@@ -126,23 +126,15 @@ pub fn sub_without_borrow<C: CircuitContext>(
 
 #[bn_component(arity = "a.len() + 1")]
 pub fn double<C: CircuitContext>(circuit: &mut C, a: &BigIntWires) -> BigIntWires {
-    let zero_wire = circuit.issue_wire();
-    let a_0 = a.get(0).unwrap();
-    circuit.add_gate(Gate::nimp(a_0, a_0, zero_wire));
-
     BigIntWires {
-        bits: iter::once(zero_wire).chain(a.iter().copied()).collect(),
+        bits: iter::once(FALSE_WIRE).chain(a.iter().copied()).collect(),
     }
 }
 
 #[bn_component(arity = "a.len()")]
 pub fn double_without_overflow<C: CircuitContext>(circuit: &mut C, a: &BigIntWires) -> BigIntWires {
-    let zero_wire = circuit.issue_wire();
-    let a_0 = a.get(0).unwrap();
-    circuit.add_gate(Gate::nimp(a_0, a_0, zero_wire));
-
     BigIntWires {
-        bits: iter::once(zero_wire)
+        bits: iter::once(FALSE_WIRE)
             .chain(a.iter().take(a.len() - 1).copied())
             .collect(),
     }
@@ -207,11 +199,9 @@ mod tests {
     use super::*;
     use crate::{
         circuit::{
-            CircuitBuilder, CircuitInput,
-            streaming::{
-                CircuitMode, CircuitOutput, EncodeInput, StreamingResult, WiresObject,
-                modes::{Execute, ExecuteMode},
-            },
+            CircuitBuilder, CircuitInput, CircuitMode, CircuitOutput, EncodeInput, StreamingResult,
+            WiresObject,
+            modes::{Execute, ExecuteMode},
         },
         gadgets::bigint::bits_from_biguint_with_len,
     };
@@ -266,7 +256,7 @@ mod tests {
             output_value: output_wires,
             output_wires_ids,
             ..
-        }: crate::circuit::streaming::StreamingResult<ExecuteMode, _, Vec<bool>> =
+        }: crate::circuit::StreamingResult<ExecuteMode, _, Vec<bool>> =
             CircuitBuilder::streaming_execute(input, 10_000, |root, input| {
                 let [a, b] = input;
                 let result = operation(root, a, b);
@@ -314,7 +304,7 @@ mod tests {
             output_value: output_wires,
             output_wires_ids,
             ..
-        }: crate::circuit::streaming::StreamingResult<ExecuteMode, _, Vec<bool>> =
+        }: crate::circuit::StreamingResult<ExecuteMode, _, Vec<bool>> =
             CircuitBuilder::streaming_execute(input, 10_000, |root, input| {
                 let [a] = input;
                 let result = operation(root, a, &b_big);
@@ -424,7 +414,7 @@ mod tests {
             output_value: output_wires,
             output_wires_ids,
             ..
-        }: crate::circuit::streaming::StreamingResult<ExecuteMode, _, Vec<bool>> =
+        }: crate::circuit::StreamingResult<ExecuteMode, _, Vec<bool>> =
             CircuitBuilder::streaming_execute(input, 10_000, |root, input| {
                 let [a] = input;
 

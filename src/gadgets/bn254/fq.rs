@@ -10,7 +10,7 @@ use rand::Rng;
 use super::super::{bigint::BigIntWires, bn254::fp254impl::Fp254Impl};
 use crate::{
     CircuitContext, WireId,
-    circuit::streaming::{FromWires, WiresObject},
+    circuit::{FromWires, WiresObject},
     gadgets::{
         self,
         bigint::{self, Error},
@@ -184,7 +184,7 @@ impl Fq {
 
         let neg_one_mont = Fq(BigIntWires::new_constant(
             Self::N_BITS,
-            &BigUint::from(-ark_bn254::Fq::ONE),
+            &BigUint::from(Fq::as_montgomery(-ark_bn254::Fq::ONE)),
         )
         .unwrap());
 
@@ -304,15 +304,15 @@ pub(super) mod tests {
     use std::{array, iter};
 
     use ark_ff::AdditiveGroup;
-    use log::trace;
     use rand::Rng;
     use test_log::test;
+    use tracing::trace;
 
     use super::*;
     use crate::{
         circuit::{
-            CircuitBuilder, CircuitInput,
-            streaming::{CircuitMode, CircuitOutput, EncodeInput, modes::ExecuteMode},
+            CircuitBuilder, CircuitInput, CircuitMode, CircuitOutput, EncodeInput,
+            modes::ExecuteMode,
         },
         gadgets::{
             bigint::{BigUint as BigUintOutput, bits_from_biguint_with_len},

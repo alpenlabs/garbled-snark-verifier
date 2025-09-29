@@ -1,8 +1,8 @@
 use circuit_component_macro::bn_component;
-use log::{debug, trace};
+use tracing::{debug, trace};
 
 use super::{BigIntWires, BigUint, add};
-use crate::{CircuitContext, Gate, GateType, WireId, circuit::streaming::FALSE_WIRE};
+use crate::{CircuitContext, Gate, GateType, WireId, circuit::FALSE_WIRE};
 
 /// Pre-computed Karatsuba vs Naive algorithm decisions
 const fn is_use_karatsuba(len: usize) -> bool {
@@ -337,11 +337,8 @@ mod tests {
     use super::*;
     use crate::{
         circuit::{
-            CircuitBuilder, CircuitInput,
-            streaming::{
-                EncodeInput, StreamingResult, WiresObject,
-                modes::{CircuitMode, Execute, ExecuteMode},
-            },
+            CircuitBuilder, CircuitInput, EncodeInput, StreamingResult, WiresObject,
+            modes::{CircuitMode, Execute, ExecuteMode},
         },
         gadgets::bigint::bits_from_biguint_with_len,
     };
@@ -401,7 +398,7 @@ mod tests {
             output_value: output_wires,
             output_wires_ids,
             ..
-        }: crate::circuit::streaming::StreamingResult<ExecuteMode, _, Vec<bool>> =
+        }: crate::circuit::StreamingResult<ExecuteMode, _, Vec<bool>> =
             CircuitBuilder::streaming_execute(input, 10_000, |root, input| {
                 let [a, b] = input;
                 trace!("Input A wire IDs: {:?}", &a.bits);
@@ -506,7 +503,7 @@ mod tests {
             output_value: output_wires,
             output_wires_ids,
             ..
-        }: crate::circuit::streaming::StreamingResult<ExecuteMode, _, Vec<bool>> =
+        }: crate::circuit::StreamingResult<ExecuteMode, _, Vec<bool>> =
             CircuitBuilder::streaming_execute(input, 10_000, |root, a| {
                 let result = operation(root, a, &c_big);
                 result.to_wires_vec()
@@ -752,7 +749,7 @@ mod tests {
             output_value,
             output_wires_ids,
             ..
-        }: crate::circuit::streaming::StreamingResult<ExecuteMode, _, Vec<bool>> =
+        }: crate::circuit::StreamingResult<ExecuteMode, _, Vec<bool>> =
             CircuitBuilder::streaming_execute(input, 10_000, |root, a| {
                 let result = mul_by_constant_modulo_power_two(root, a, &c, power);
                 assert_eq!(result.bits.len(), power);
@@ -802,7 +799,7 @@ mod tests {
             output_value,
             output_wires_ids,
             ..
-        }: crate::circuit::streaming::StreamingResult<ExecuteMode, _, Vec<bool>> =
+        }: crate::circuit::StreamingResult<ExecuteMode, _, Vec<bool>> =
             CircuitBuilder::streaming_execute(input, 10_000, |root, a| {
                 let result = mul_by_constant_modulo_power_two(root, a, &c, power);
                 assert_eq!(result.bits.len(), power);
@@ -853,7 +850,7 @@ mod tests {
             output_value,
             output_wires_ids,
             ..
-        }: crate::circuit::streaming::StreamingResult<ExecuteMode, _, Vec<bool>> =
+        }: crate::circuit::StreamingResult<ExecuteMode, _, Vec<bool>> =
             CircuitBuilder::streaming_execute(input, 10_000, |root, a| {
                 let result = mul_by_constant_modulo_power_two(root, a, &c, power);
                 result.to_wires_vec()
@@ -939,7 +936,7 @@ mod tests {
     /// least 1 bit and would panic.
     #[test]
     fn karatsuba_policy_chooses_min_gate_count_up_to_300() {
-        use crate::circuit::streaming::StreamingResult;
+        use crate::circuit::StreamingResult;
 
         fn gate_count_for<F>(n_bits: usize, op: F) -> u64
         where

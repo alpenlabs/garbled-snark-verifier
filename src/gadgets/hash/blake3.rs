@@ -5,11 +5,8 @@
 use crate::{
     CircuitContext, WireId,
     circuit::{
-        CircuitInput,
-        streaming::{
-            CircuitMode, CircuitOutput, EncodeInput, ExecuteMode, FALSE_WIRE, TRUE_WIRE,
-            WiresObject,
-        },
+        CircuitInput, CircuitMode, CircuitOutput, EncodeInput, ExecuteMode, FALSE_WIRE, TRUE_WIRE,
+        WiresObject,
     },
 };
 use core::cmp::min;

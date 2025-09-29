@@ -1,4 +1,4 @@
-use crate::{S, core::gate::garbling::aes_ni::aes128_encrypt_block_static};
+use crate::{S, hashers::aes_ni::aes128_encrypt_block_static};
 
 // It can be any, we use it to use AES as a hash.
 pub struct CiphertextHashAcc {
@@ -14,6 +14,12 @@ impl Default for CiphertextHashAcc {
 }
 
 impl CiphertextHashAcc {
+    pub fn digest(input: S) -> u128 {
+        let mut h = Self::default();
+        h.update(input);
+        h.finalize()
+    }
+
     pub fn update(&mut self, ciphertext: S) {
         // Use the static pre-expanded AES key to avoid per-call key schedule cost.
         self.running_hash = S::from_bytes(
@@ -22,7 +28,7 @@ impl CiphertextHashAcc {
         );
     }
 
-    pub fn finalize(self) -> u128 {
+    pub fn finalize(&self) -> u128 {
         self.running_hash.to_u128()
     }
 }
