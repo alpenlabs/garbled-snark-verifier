@@ -260,8 +260,8 @@ pub fn groth16_verify_compressed<C: CircuitContext>(
     groth16_verify(circuit, public, &a, &b, &c, vk)
 }
 
-// convert from hash to scalar field element(s)
-// one way is to truncate the top N bits to make the hash fit in the scalar field
+// Convert from hash to scalar field element(s)
+// A way is to truncate the top 3 bits to make the hash fit in the scalar field
 fn convert_hash_to_bigint_wires(out_hash: HashOutputWires) -> Vec<Fr> {
     let mut out_hash = out_hash.value;
     // mask top 3 bits by taking the first byte of hash output and masking its top 3 bit
@@ -279,6 +279,10 @@ fn convert_hash_to_bigint_wires(out_hash: HashOutputWires) -> Vec<Fr> {
 
 /// Convenience wrapper: verify using compressed A and C (x, y_flag). B remains host-provided `G2Affine`.
 /// Take raw public input and convert to scalar field element(s) in-circuit
+/// 
+// TODO: check if conversion from InputMessage to Fr can be done outside of this function
+// while a function to make this conversion is passed as argument to `groth16_verify_compressed_over_raw`
+// This would make it possible to reuse this function for proofs of different ZKVMs.
 #[component(offcircuit_args = "vk")]
 pub fn groth16_verify_compressed_over_raw<const N: usize, C: CircuitContext>(
     circuit: &mut C,
@@ -932,19 +936,14 @@ mod tests {
     fn test_groth16_verify_compressed_true_small() {
         let k = 4; // circuit size; pairing cost dominates anyway
         let mut rng = ChaCha20Rng::seed_from_u64(33333);
-        let c_val = ark_bn254::Fr::rand(&mut rng);
-        let b = ark_bn254::Fr::rand(&mut rng);
-        let binv = b.inverse().unwrap();
-        let a = c_val * binv;
-
-        let circuit = DummyCircuit::<ark_bn254::Fr> {
-            a: Some(a),
-            b: Some(b),
+         let circuit = DummyCircuit::<ark_bn254::Fr> {
+            a: Some(ark_bn254::Fr::rand(&mut rng)),
+            b: Some(ark_bn254::Fr::rand(&mut rng)),
             num_variables: 8,
             num_constraints: 1 << k,
         };
         let (pk, vk) = Groth16::<ark_bn254::Bn254>::setup(circuit, &mut rng).unwrap();
-        //let c_val = circuit.a.unwrap() * circuit.b.unwrap();
+        let c_val = circuit.a.unwrap() * circuit.b.unwrap();
         let proof = Groth16::<ark_bn254::Bn254>::prove(&pk, circuit, &mut rng).unwrap();
 
         let inputs = Groth16ExecInputCompressed(Groth16ExecInput {
