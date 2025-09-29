@@ -279,7 +279,7 @@ fn convert_hash_to_bigint_wires(out_hash: HashOutputWires) -> Vec<Fr> {
 
 /// Convenience wrapper: verify using compressed A and C (x, y_flag). B remains host-provided `G2Affine`.
 /// Take raw public input and convert to scalar field element(s) in-circuit
-/// 
+///
 // TODO: check if conversion from InputMessage to Fr can be done outside of this function
 // while a function to make this conversion is passed as argument to `groth16_verify_compressed_over_raw`
 // This would make it possible to reuse this function for proofs of different ZKVMs.
@@ -936,7 +936,7 @@ mod tests {
     fn test_groth16_verify_compressed_true_small() {
         let k = 4; // circuit size; pairing cost dominates anyway
         let mut rng = ChaCha20Rng::seed_from_u64(33333);
-         let circuit = DummyCircuit::<ark_bn254::Fr> {
+        let circuit = DummyCircuit::<ark_bn254::Fr> {
             a: Some(ark_bn254::Fr::rand(&mut rng)),
             b: Some(ark_bn254::Fr::rand(&mut rng)),
             num_variables: 8,
