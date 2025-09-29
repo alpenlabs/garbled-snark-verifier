@@ -26,7 +26,7 @@ impl Secp256k1 {
         }
     }
 
-    // Replacement of BatchMulPreprocessing::batch_mul, which (1) uses rayon parallization
+    // Replacement of BatchMulPreprocessing::batch_mul, which (1) uses rayon parallelization
     // and (2) converts the result to an affine point instead of a projective point.
     fn generator_batch_mul(&self, scalars: &[Fr]) -> Vec<Projective> {
         scalars.iter().map(|e| self.windowed_mul(e)).collect()
