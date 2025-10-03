@@ -66,6 +66,7 @@ pub fn groth16_verify<C: CircuitContext>(
         vk,
     } = input;
 
+    // Standard verification with public inputs
     // MSM: sum_i public[i] * gamma_abc_g1[i+1]
     let bases: Vec<ark_bn254::G1Projective> = vk
         .gamma_abc_g1
@@ -91,7 +92,7 @@ pub fn groth16_verify<C: CircuitContext>(
         a,            // p3
         -vk.gamma_g2, // q1
         -vk.delta_g2, // q2
-        b,            // q2
+        b,            // q3
     );
 
     let alpha_beta = ark_bn254::Bn254::final_exponentiation(ark_bn254::Bn254::multi_miller_loop(
@@ -245,6 +246,7 @@ impl WiresObject for CompressedG2Wires {
 }
 
 /// Convenience wrapper: verify using compressed A and C (x, y_flag). B remains host-provided `G2Affine`.
+/// Includes optimization for empty public inputs to avoid unnecessary MSM computation.
 pub fn groth16_verify_compressed<C: CircuitContext>(
     circuit: &mut C,
     input: &Groth16VerifyCompressedInputWires,
@@ -567,6 +569,39 @@ mod tests {
         }
     }
 
+    // Circuit with no public inputs - only private witnesses
+    #[derive(Copy, Clone)]
+    struct DummyCircuitNoPublicInputs<F: ark_ff::PrimeField> {
+        pub a: Option<F>,
+        pub b: Option<F>,
+        pub num_variables: usize,
+        pub num_constraints: usize,
+    }
+
+    impl<F: ark_ff::PrimeField> ConstraintSynthesizer<F> for DummyCircuitNoPublicInputs<F> {
+        fn generate_constraints(self, cs: ConstraintSystemRef<F>) -> Result<(), SynthesisError> {
+            let a = cs.new_witness_variable(|| self.a.ok_or(SynthesisError::AssignmentMissing))?;
+            let b = cs.new_witness_variable(|| self.b.ok_or(SynthesisError::AssignmentMissing))?;
+            let c = cs.new_witness_variable(|| {
+                let a = self.a.ok_or(SynthesisError::AssignmentMissing)?;
+                let b = self.b.ok_or(SynthesisError::AssignmentMissing)?;
+                Ok(a * b)
+            })?;
+
+            for _ in 0..(self.num_variables - 3) {
+                let _ =
+                    cs.new_witness_variable(|| self.a.ok_or(SynthesisError::AssignmentMissing))?;
+            }
+
+            for _ in 0..self.num_constraints - 1 {
+                cs.enforce_constraint(lc!() + a, lc!() + b, lc!() + c)?;
+            }
+
+            cs.enforce_constraint(lc!(), lc!(), lc!())?;
+            Ok(())
+        }
+    }
+
     #[test]
     fn test_groth16_verify_true() {
         let k = 6;
@@ -616,6 +651,143 @@ mod tests {
         run_false_bitflip_test(19283, |inputs| {
             inputs.c.x += ark_bn254::Fq::ONE;
         });
+    }
+
+    #[test]
+    fn test_groth16_verify_no_public_inputs_true() {
+        // Test successful verification with empty public inputs
+        let k = 6;
+        let mut rng = ChaCha20Rng::seed_from_u64(99999);
+        let circuit = DummyCircuitNoPublicInputs::<ark_bn254::Fr> {
+            a: Some(ark_bn254::Fr::rand(&mut rng)),
+            b: Some(ark_bn254::Fr::rand(&mut rng)),
+            num_variables: 10,
+            num_constraints: 1 << k,
+        };
+
+        let (pk, vk) = Groth16::<ark_bn254::Bn254>::setup(circuit, &mut rng).unwrap();
+        let proof = Groth16::<ark_bn254::Bn254>::prove(&pk, circuit, &mut rng).unwrap();
+
+        let inputs = Groth16VerifyInput {
+            public: vec![], // Empty public inputs
+            a: proof.a.into_group(),
+            b: proof.b.into_group(),
+            c: proof.c.into_group(),
+            vk,
+        };
+
+        let out: StreamingResult<_, _, bool> =
+            CircuitBuilder::streaming_execute(inputs, 10_000, groth16_verify);
+
+        assert!(
+            out.output_value,
+            "Valid proof with empty public inputs should verify"
+        );
+    }
+
+    #[test]
+    fn test_groth16_verify_no_public_inputs_false_bitflip_a() {
+        // Test unsuccessful verification with empty public inputs - corrupt proof.a
+        let k = 6;
+        let mut rng = ChaCha20Rng::seed_from_u64(88888);
+        let circuit = DummyCircuitNoPublicInputs::<ark_bn254::Fr> {
+            a: Some(ark_bn254::Fr::rand(&mut rng)),
+            b: Some(ark_bn254::Fr::rand(&mut rng)),
+            num_variables: 10,
+            num_constraints: 1 << k,
+        };
+
+        let (pk, vk) = Groth16::<ark_bn254::Bn254>::setup(circuit, &mut rng).unwrap();
+        let proof = Groth16::<ark_bn254::Bn254>::prove(&pk, circuit, &mut rng).unwrap();
+
+        let mut inputs = Groth16VerifyInput {
+            public: vec![], // Empty public inputs
+            a: proof.a.into_group(),
+            b: proof.b.into_group(),
+            c: proof.c.into_group(),
+            vk,
+        };
+
+        // Corrupt proof.a by using a different random point
+        inputs.a = ark_bn254::G1Projective::rand(&mut rng);
+
+        let out: StreamingResult<_, _, bool> =
+            CircuitBuilder::streaming_execute(inputs, 10_000, groth16_verify);
+
+        assert!(
+            !out.output_value,
+            "Corrupted proof with empty public inputs should not verify"
+        );
+    }
+
+    #[test]
+    fn test_groth16_verify_no_public_inputs_false_bitflip_b() {
+        // Test unsuccessful verification with empty public inputs - corrupt proof.b
+        let k = 6;
+        let mut rng = ChaCha20Rng::seed_from_u64(77777);
+        let circuit = DummyCircuitNoPublicInputs::<ark_bn254::Fr> {
+            a: Some(ark_bn254::Fr::rand(&mut rng)),
+            b: Some(ark_bn254::Fr::rand(&mut rng)),
+            num_variables: 10,
+            num_constraints: 1 << k,
+        };
+
+        let (pk, vk) = Groth16::<ark_bn254::Bn254>::setup(circuit, &mut rng).unwrap();
+        let proof = Groth16::<ark_bn254::Bn254>::prove(&pk, circuit, &mut rng).unwrap();
+
+        let mut inputs = Groth16VerifyInput {
+            public: vec![], // Empty public inputs
+            a: proof.a.into_group(),
+            b: proof.b.into_group(),
+            c: proof.c.into_group(),
+            vk,
+        };
+
+        // Corrupt proof.b by using a different random point
+        inputs.b = ark_bn254::G2Projective::rand(&mut rng);
+
+        let out: StreamingResult<_, _, bool> =
+            CircuitBuilder::streaming_execute(inputs, 10_000, groth16_verify);
+
+        assert!(
+            !out.output_value,
+            "Corrupted proof with empty public inputs should not verify"
+        );
+    }
+
+    #[test]
+    fn test_groth16_verify_no_public_inputs_false_bitflip_c() {
+        // Test unsuccessful verification with empty public inputs - corrupt proof.c
+        let k = 6;
+        let mut rng = ChaCha20Rng::seed_from_u64(66666);
+        let circuit = DummyCircuitNoPublicInputs::<ark_bn254::Fr> {
+            a: Some(ark_bn254::Fr::rand(&mut rng)),
+            b: Some(ark_bn254::Fr::rand(&mut rng)),
+            num_variables: 10,
+            num_constraints: 1 << k,
+        };
+
+        let (pk, vk) = Groth16::<ark_bn254::Bn254>::setup(circuit, &mut rng).unwrap();
+        let proof = Groth16::<ark_bn254::Bn254>::prove(&pk, circuit, &mut rng).unwrap();
+
+        let mut inputs = Groth16VerifyInput {
+            public: vec![], // Empty public inputs
+            a: proof.a.into_group(),
+            b: proof.b.into_group(),
+            c: proof.c.into_group(),
+            vk,
+        };
+
+        // Corrupt proof.c by using a different random point
+        inputs.c = ark_bn254::G1Projective::rand(&mut rng);
+
+        let out: StreamingResult<_, _, bool> =
+            CircuitBuilder::streaming_execute(inputs, 10_000, groth16_verify);
+
+        assert!(
+            !out.output_value,
+            "Corrupted proof with empty public inputs should not verify"
+        );
     }
 
     #[test]

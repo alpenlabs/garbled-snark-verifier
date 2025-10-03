@@ -1,6 +1,6 @@
 //! High-level Groth16 verification API (BN254) for streaming circuits.
 
-use std::ops::Deref;
+use std::{iter, ops::Deref};
 
 use ark_bn254::{Bn254, Fr};
 use ark_ec::AffineRepr;
@@ -46,6 +46,8 @@ pub type Compressed = Groth16VerifyCompressedInput;
 pub use gadgets::groth16_verify_compressed as verify_compressed;
 
 mod ark_canonical {
+    use std::borrow::Cow;
+
     use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
     use serde::{Deserializer, Serializer};
 
@@ -60,14 +62,25 @@ mod ark_canonical {
             .serialize_compressed(&mut bytes)
             .map_err(serde::ser::Error::custom)?;
 
-        serializer.serialize_bytes(&bytes)
+        if serializer.is_human_readable() {
+            let hex = hex::encode(&bytes);
+            serializer.serialize_str(&hex)
+        } else {
+            serializer.serialize_bytes(&bytes)
+        }
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<VerifyingKey<Bn254>, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let bytes: Vec<u8> = serde::Deserialize::deserialize(deserializer)?;
+        let bytes = if deserializer.is_human_readable() {
+            let hex: Cow<'de, str> = serde::Deserialize::deserialize(deserializer)?;
+            hex::decode(hex.as_ref()).map_err(serde::de::Error::custom)?
+        } else {
+            serde::Deserialize::deserialize(deserializer)?
+        };
+
         VerifyingKey::deserialize_compressed(&bytes[..]).map_err(serde::de::Error::custom)
     }
 }
@@ -688,5 +701,23 @@ impl<M: CircuitMode<WireValue = EvaluatedWire>> EncodeInput<M> for EvaluatorComp
             .zip_eq(self.c.x.iter())
             .for_each(|(wire_id, ew)| cache.feed_wire(*wire_id, ew.clone()));
         cache.feed_wire(repr.c.y_flag, self.c.y_flag.clone());
+    }
+}
+
+impl EvaluatorCompressedInput {
+    pub fn iter_active_labels(&self) -> impl Iterator<Item = EvaluatedWire> {
+        self.public
+            .iter()
+            .flat_map(|pp| pp.iter())
+            .chain(self.a.x.iter().chain(iter::once(&self.a.y_flag)))
+            .chain(
+                self.b
+                    .x
+                    .iter()
+                    .flat_map(|f2| f2.iter())
+                    .chain(iter::once(&self.b.y_flag)),
+            )
+            .chain(self.c.x.iter().chain(iter::once(&self.c.y_flag)))
+            .cloned()
     }
 }

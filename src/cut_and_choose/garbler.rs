@@ -9,12 +9,15 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::{
-    AesNiHasher, CiphertextHashAcc, GarbleMode, GarbledWire, WireId,
+    AESAccumulatingHash, AesNiHasher, GarbleMode, GarbledWire, WireId,
     circuit::{
         CiphertextHandler, CircuitBuilder, CircuitInput, EncodeInput, StreamingMode,
         StreamingResult,
     },
-    cut_and_choose::{Commit, Config, Seed, commit_label},
+    cut_and_choose::{
+        CiphertextCommit, Config, DefaultLabelCommitHasher, LabelCommit, LabelCommitHasher, Seed,
+        commit_label_with,
+    },
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -35,15 +38,15 @@ pub struct GarbledInstance {
     /// Values of the input Wires, which were fed to the circuit input
     pub input_wire_values: Vec<GarbledWire>,
 
-    pub ciphertext_handler_result: u128,
+    pub ciphertext_handler_result: CiphertextCommit,
 }
 
 impl<I: CircuitInput>
-    From<StreamingResult<GarbleMode<AesNiHasher, CiphertextHashAcc>, I, GarbledWire>>
+    From<StreamingResult<GarbleMode<AesNiHasher, AESAccumulatingHash>, I, GarbledWire>>
     for GarbledInstance
 {
     fn from(
-        res: StreamingResult<GarbleMode<AesNiHasher, CiphertextHashAcc>, I, GarbledWire>,
+        res: StreamingResult<GarbleMode<AesNiHasher, AESAccumulatingHash>, I, GarbledWire>,
     ) -> Self {
         GarbledInstance {
             false_wire_constant: res.false_wire_constant,
@@ -55,18 +58,30 @@ impl<I: CircuitInput>
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GarbledInstanceCommit {
-    ciphertext_commit: Commit,
-    input_labels_commit: Commit,
+#[derive(Clone, Debug, Serialize, Deserialize, Eq)]
+#[serde(bound = "H: LabelCommitHasher")]
+pub struct GarbledInstanceCommit<H: LabelCommitHasher = DefaultLabelCommitHasher> {
+    ciphertext_commit: CiphertextCommit,
+    input_labels_commit: Vec<LabelCommit<H::Output>>,
     // Separate commits for output labels: one for label1 and one for label0
-    output_label1_commit: Commit,
-    output_label0_commit: Commit,
-    true_constant_commit: Commit,
-    false_constant_commit: Commit,
+    output_label1_commit: H::Output,
+    output_label0_commit: H::Output,
+    true_constant_commit: H::Output,
+    false_constant_commit: H::Output,
 }
 
-impl GarbledInstanceCommit {
+impl<H: LabelCommitHasher> PartialEq for GarbledInstanceCommit<H> {
+    fn eq(&self, other: &Self) -> bool {
+        self.ciphertext_commit == other.ciphertext_commit
+            && self.input_labels_commit == other.input_labels_commit
+            && self.output_label1_commit == other.output_label1_commit
+            && self.output_label0_commit == other.output_label0_commit
+            && self.true_constant_commit == other.true_constant_commit
+            && self.false_constant_commit == other.false_constant_commit
+    }
+}
+
+impl<H: LabelCommitHasher> GarbledInstanceCommit<H> {
     pub fn new(instance: &GarbledInstance) -> Self {
         Self {
             ciphertext_commit: instance.ciphertext_handler_result,
@@ -76,46 +91,52 @@ impl GarbledInstanceCommit {
 
             output_label0_commit: Self::commit_label0(&instance.output_wire_values),
 
-            true_constant_commit: commit_label(instance.true_wire_constant.select(true)),
-            false_constant_commit: commit_label(instance.false_wire_constant.select(false)),
+            true_constant_commit: commit_label_with::<H>(instance.true_wire_constant.select(true)),
+            false_constant_commit: commit_label_with::<H>(
+                instance.false_wire_constant.select(false),
+            ),
         }
     }
 
-    pub fn commit_garbled_wires(inputs: &[GarbledWire]) -> Commit {
-        let mut h = CiphertextHashAcc::default();
-        inputs.iter().for_each(|GarbledWire { label0, label1 }| {
-            h.update(*label0);
-            h.update(*label1);
-        });
-        h.finalize()
+    pub fn commit_garbled_wires(inputs: &[GarbledWire]) -> Vec<LabelCommit<H::Output>> {
+        inputs
+            .iter()
+            .map(|GarbledWire { label0, label1 }| {
+                LabelCommit::<H::Output>::new::<H>(*label0, *label1)
+            })
+            .collect()
     }
 
-    fn commit_label1(input: &GarbledWire) -> Commit {
-        commit_label(input.label1)
+    fn commit_label1(input: &GarbledWire) -> H::Output {
+        commit_label_with::<H>(input.label1)
     }
 
-    fn commit_label0(input: &GarbledWire) -> Commit {
-        commit_label(input.label0)
+    fn commit_label0(input: &GarbledWire) -> H::Output {
+        commit_label_with::<H>(input.label0)
     }
 
-    pub fn output_label1_commit(&self) -> Commit {
+    pub fn output_label1_commit(&self) -> H::Output {
         self.output_label1_commit
     }
 
-    pub fn output_label0_commit(&self) -> Commit {
+    pub fn output_label0_commit(&self) -> H::Output {
         self.output_label0_commit
     }
 
-    pub fn true_consatnt_wire_commit(&self) -> Commit {
+    pub fn true_consatnt_wire_commit(&self) -> H::Output {
         self.true_constant_commit
     }
 
-    pub fn false_consatnt_wire_commit(&self) -> Commit {
+    pub fn false_consatnt_wire_commit(&self) -> H::Output {
         self.false_constant_commit
     }
 
-    pub fn ciphertext_commit(&self) -> Commit {
+    pub fn ciphertext_commit(&self) -> CiphertextCommit {
         self.ciphertext_commit
+    }
+
+    pub fn input_labels_commit(&self) -> &[LabelCommit<H::Output>] {
+        &self.input_labels_commit
     }
 }
 
@@ -158,7 +179,11 @@ pub struct Garbler<I: CircuitInput + Clone> {
 
 impl<I> Garbler<I>
 where
-    I: CircuitInput + Clone + Send + Sync + EncodeInput<GarbleMode<AesNiHasher, CiphertextHashAcc>>,
+    I: CircuitInput
+        + Clone
+        + Send
+        + Sync
+        + EncodeInput<GarbleMode<AesNiHasher, AESAccumulatingHash>>,
     <I as CircuitInput>::WireRepr: Send,
     I: 'static,
 {
@@ -166,7 +191,7 @@ where
     pub fn create<F>(mut rng: impl Rng, config: Config<I>, live_capacity: usize, builder: F) -> Self
     where
         F: Fn(
-                &mut StreamingMode<GarbleMode<AesNiHasher, CiphertextHashAcc>>,
+                &mut StreamingMode<GarbleMode<AesNiHasher, AESAccumulatingHash>>,
                 &I::WireRepr,
             ) -> WireId
             + Send
@@ -184,7 +209,7 @@ where
                 .enumerate()
                 .map(|(index, garbling_seed)| {
                     let inputs = config.input.clone();
-                    let hasher = CiphertextHashAcc::default();
+                    let hasher = AESAccumulatingHash::default();
 
                     let span = tracing::info_span!("garble", instance = index);
                     let _enter = span.enter();
@@ -192,7 +217,7 @@ where
                     info!("Starting garbling of circuit (cut-and-choose)");
 
                     let res: StreamingResult<
-                        GarbleMode<AesNiHasher, CiphertextHashAcc>,
+                        GarbleMode<AesNiHasher, AESAccumulatingHash>,
                         I,
                         GarbledWire,
                     > = CircuitBuilder::streaming_garbling(
@@ -217,10 +242,17 @@ where
     }
 
     pub fn commit(&self) -> Vec<GarbledInstanceCommit> {
+        self.commit_with_hasher::<DefaultLabelCommitHasher>()
+    }
+
+    pub fn commit_with_hasher<HHasher>(&self) -> Vec<GarbledInstanceCommit<HHasher>>
+    where
+        HHasher: LabelCommitHasher,
+    {
         // Build commits in parallel; independent per instance
         self.instances
             .iter()
-            .map(GarbledInstanceCommit::new)
+            .map(GarbledInstanceCommit::<HHasher>::new)
             .collect()
     }
 
@@ -313,5 +345,9 @@ where
 
     pub fn stage(&self) -> &GarblerStage {
         &self.stage
+    }
+
+    pub fn output_wire(&self, index: usize) -> Option<&GarbledWire> {
+        self.instances.get(index).map(|gw| &gw.output_wire_values)
     }
 }

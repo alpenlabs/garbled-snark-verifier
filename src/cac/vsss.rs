@@ -1,8 +1,6 @@
 use super::utils::neg_pos_sum_of_powers_of_two;
 use ark_ec::{PrimeGroup, scalar_mul::BatchMulPreprocessing};
-use ark_ff::BigInteger;
-use ark_ff::PrimeField;
-use ark_ff::{Field, One, UniformRand, Zero};
+use ark_ff::{BigInteger, Field, One, PrimeField, UniformRand, Zero};
 use ark_secp256k1::{Fr, Projective};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
