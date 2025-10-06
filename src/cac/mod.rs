@@ -1,4 +1,5 @@
 pub mod adaptor_sigs;
+pub mod utils;
 pub mod vsss;
 
 #[cfg(test)]
@@ -11,12 +12,14 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
-    use crate::cac::{adaptor_sigs::AdaptorInfo, vsss::lagrange_interpolate_at_index};
+    use crate::cac::{adaptor_sigs::AdaptorInfo, vsss::lagrange_interpolate_whole_polynomial};
 
     #[test]
     fn test_full_flow() {
         let n = 181;
         let k = 181 - 7;
+
+        let secp = vsss::Secp256k1::new();
 
         let mut rng = rand::thread_rng();
 
@@ -24,10 +27,10 @@ mod tests {
         let polynomial = vsss::Polynomial::rand(&mut rng, k);
 
         // step 2: garbler send commitments to the polynomial coefficients to the evaluator
-        let coefficient_commits = polynomial.coefficient_commits();
+        let coefficient_commits = polynomial.coefficient_commits(&secp);
 
         // step 3: garbler shares commits, sends them to evaluator
-        let share_commits = polynomial.share_commits(n);
+        let share_commits = polynomial.share_commits(&secp, n);
 
         // step 4: evaluator verifies correctness of the share commits:
         share_commits
@@ -46,7 +49,7 @@ mod tests {
 
         // step 7: evaluator checks that the selected shares match the share commits
         share_commits
-            .verify_shares(&selected_shares)
+            .verify_shares(&secp, &selected_shares)
             .expect("Share verification failed");
 
         // step 8: (omitted) evaluator checks the garbled circuit validity
@@ -103,13 +106,16 @@ mod tests {
             &[(unused_share_commit.0, unused_share_secret)],
         ]
         .concat();
-        let missing_shares = (0..n)
-            .filter(|&i| combined_shares.iter().all(|(j, _)| i != *j))
-            .map(|i| (i, lagrange_interpolate_at_index(&combined_shares, i)))
-            .collect::<Vec<_>>();
 
-        for share in missing_shares {
-            assert_eq!(share, all_shares[share.0]);
+        let missing_points: Vec<usize> = (0..n)
+            .filter(|&i| combined_shares.iter().all(|(j, _)| i != *j))
+            .collect();
+
+        let missing_shares =
+            lagrange_interpolate_whole_polynomial(&combined_shares, &missing_points);
+
+        for (x, y) in missing_points.into_iter().zip(missing_shares.into_iter()) {
+            assert_eq!(all_shares[x].1, y)
         }
     }
 }

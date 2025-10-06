@@ -1,4 +1,7 @@
-use std::sync::{Arc, OnceLock};
+use std::{
+    fmt,
+    sync::{Arc, OnceLock},
+};
 
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use serde::{Deserialize, Serialize};
@@ -16,12 +19,83 @@ pub use garbler::*;
 pub mod groth16;
 
 pub type Seed = u64;
-pub type Commit = u128;
+
+pub type CiphertextCommit = [u8; 16];
+
+pub trait LabelCommitHasher: fmt::Debug {
+    type Output: Copy
+        + fmt::Debug
+        + Eq
+        + Send
+        + Sync
+        + Serialize
+        + for<'de> serde::Deserialize<'de>
+        + AsRef<[u8]>;
+
+    fn hash_label(label: S) -> Self::Output;
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AesLabelCommitHasher;
+
+impl LabelCommitHasher for AesLabelCommitHasher {
+    type Output = [u8; 16];
+
+    fn hash_label(label: S) -> Self::Output {
+        hashers::aes_ni::aes128_encrypt_block_static(label.to_bytes())
+            .expect("AES backend should be available (HW or software)")
+    }
+}
+
+pub type DefaultLabelCommitHasher = AesLabelCommitHasher;
+pub type Commit = <DefaultLabelCommitHasher as LabelCommitHasher>::Output;
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct LabelCommit<H: Clone + Copy> {
+    pub commit_label0: H,
+    pub commit_label1: H,
+}
+
+impl<H: Clone + Copy> LabelCommit<H> {
+    pub fn new<Hasher: LabelCommitHasher<Output = H>>(label0: S, label1: S) -> Self {
+        Self {
+            commit_label0: commit_label_with::<Hasher>(label0),
+            commit_label1: commit_label_with::<Hasher>(label1),
+        }
+    }
+
+    pub fn commit_for_value(&self, bit: bool) -> H {
+        if bit {
+            self.commit_label1
+        } else {
+            self.commit_label0
+        }
+    }
+}
+
+impl<H: Clone + Copy + AsRef<[u8]>> fmt::Display for LabelCommit<H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "LabelCommit {{ label0: 0x")?;
+        write_commit_hex(f, self.commit_label0.as_ref())?;
+        write!(f, ", label1: 0x")?;
+        write_commit_hex(f, self.commit_label1.as_ref())?;
+        write!(f, " }}")
+    }
+}
 
 pub fn commit_label(label: S) -> Commit {
-    let enc = hashers::aes_ni::aes128_encrypt_block_static(label.to_bytes())
-        .expect("AES backend should be available (HW or software)");
-    S::from_bytes(enc).to_u128()
+    commit_label_with::<DefaultLabelCommitHasher>(label)
+}
+
+pub fn commit_label_with<H: LabelCommitHasher>(label: S) -> H::Output {
+    H::hash_label(label)
+}
+
+pub(crate) fn write_commit_hex(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
+    for byte in bytes.iter() {
+        write!(f, "{:02x}", byte)?;
+    }
+    Ok(())
 }
 
 /// Protocol configuration shared by Garbler/Evaluator.

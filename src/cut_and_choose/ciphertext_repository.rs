@@ -9,9 +9,9 @@ use crossbeam::channel;
 use tracing::error;
 
 use crate::{
-    CiphertextHashAcc, S,
+    AESAccumulatingHash, S,
     circuit::{CiphertextHandler, ciphertext_source},
-    cut_and_choose::Commit,
+    cut_and_choose::CiphertextCommit,
 };
 
 pub trait CiphertextSourceProvider {
@@ -59,7 +59,8 @@ pub trait CiphertextHandlerProvider {
 pub struct FileCiphertextHandler {
     path: PathBuf,
     writer: BufWriter<File>,
-    hasher: CiphertextHashAcc,
+    hasher: AESAccumulatingHash,
+    bytes_written: u64,
 }
 
 impl FileCiphertextHandler {
@@ -81,18 +82,22 @@ impl FileCiphertextHandler {
         Ok(Self {
             path,
             writer: BufWriter::with_capacity(buffer_size, file),
-            hasher: CiphertextHashAcc::default(),
+            hasher: AESAccumulatingHash::default(),
+            bytes_written: 0,
         })
     }
 }
 
 impl CiphertextHandler for FileCiphertextHandler {
-    type Result = Commit;
+    type Result = CiphertextCommit;
 
     fn handle(&mut self, ct: S) {
         self.hasher.update(ct);
 
-        self.writer.write_all(&ct.to_bytes()).unwrap_or_else(|err| {
+        let bytes = ct.to_bytes();
+        self.bytes_written += bytes.len() as u64;
+
+        self.writer.write_all(&bytes).unwrap_or_else(|err| {
             panic!(
                 "failed to write ciphertext to {}: {err}",
                 self.path.display()
@@ -100,7 +105,32 @@ impl CiphertextHandler for FileCiphertextHandler {
         });
     }
 
-    fn finalize(&self) -> Self::Result {
+    fn finalize(mut self) -> Self::Result {
+        // Flush any remaining buffered data
+        self.writer.flush().unwrap_or_else(|err| {
+            panic!(
+                "failed to flush ciphertext to {}: {err}",
+                self.path.display()
+            )
+        });
+
+        // Get the underlying file and truncate it to the actual written size
+        let file = self.writer.into_inner().unwrap_or_else(|err| {
+            panic!(
+                "failed to get inner file handle for {}: {err}",
+                self.path.display()
+            )
+        });
+
+        if let Err(err) = file.set_len(self.bytes_written) {
+            error!(
+                path = %self.path.display(),
+                actual_size = self.bytes_written,
+                ?err,
+                "failed to shrink ciphertext file to actual size"
+            );
+        }
+
         self.hasher.finalize()
     }
 }

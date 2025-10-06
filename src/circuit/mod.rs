@@ -4,7 +4,7 @@ use crossbeam::channel;
 use tracing::info;
 
 use crate::{
-    CiphertextHashAcc, EvaluatedWire, GarbledWire, S, WireId,
+    AESAccumulatingHash, EvaluatedWire, GarbledWire, S, WireId,
     circuit::component_meta::ComponentMetaBuilder, core::gate_type::GateCount, hashers::GateHasher,
 };
 
@@ -142,18 +142,18 @@ pub trait CiphertextHandler: Sized {
 
     /// Handle next ciphertext label in stream order.
     fn handle(&mut self, ct: S);
-    fn finalize(&self) -> Self::Result;
+    fn finalize(self) -> Self::Result;
 }
 
-impl CiphertextHandler for CiphertextHashAcc {
-    type Result = u128;
+impl CiphertextHandler for AESAccumulatingHash {
+    type Result = [u8; 16];
 
     fn handle(&mut self, ct: S) {
         self.update(ct);
     }
 
-    fn finalize(&self) -> Self::Result {
-        CiphertextHashAcc::finalize(self)
+    fn finalize(self) -> Self::Result {
+        AESAccumulatingHash::finalize(&self)
     }
 }
 
@@ -166,7 +166,7 @@ impl CiphertextHandler for CiphertextSender {
         self.send(ct).unwrap();
     }
 
-    fn finalize(&self) -> Self::Result {}
+    fn finalize(self) -> Self::Result {}
 }
 
 impl CiphertextHandler for () {
@@ -174,7 +174,7 @@ impl CiphertextHandler for () {
 
     fn handle(&mut self, _ct: S) {}
 
-    fn finalize(&self) -> Self::Result {}
+    fn finalize(self) -> Self::Result {}
 }
 
 impl<H: GateHasher, CTH: CiphertextHandler> CircuitBuilder<GarbleMode<H, CTH>> {
@@ -275,15 +275,15 @@ impl<M: CircuitMode> CircuitBuilder<M> {
         let output_repr = f(&mut ctx, &allocated_inputs);
         let output_wires = output_repr.to_wires_vec();
 
-        let (ciphertext_handler_result, gate_count, output) = match &mut ctx {
-            StreamingMode::ExecutionPass(ctx) => {
+        let true_wire_constant = ctx.lookup_wire(TRUE_WIRE).unwrap();
+        let false_wire_constant = ctx.lookup_wire(FALSE_WIRE).unwrap();
+        let (ciphertext_handler_result, gate_count, output) = match ctx {
+            StreamingMode::ExecutionPass(mut ctx) => {
                 info!("gate count: {}", ctx.gate_count);
-                println!("gate count: {}", ctx.gate_count);
-                (
-                    ctx.finalize_ciphertext_accumulator(),
-                    ctx.gate_count.clone(),
-                    O::decode(output_repr, &mut ctx.mode),
-                )
+                let output = O::decode(output_repr, &mut ctx.mode);
+                let gate_count = ctx.gate_count.clone();
+
+                (ctx.finalize_ciphertext_accumulator(), gate_count, output)
             }
             _ => unreachable!(),
         };
@@ -292,8 +292,8 @@ impl<M: CircuitMode> CircuitBuilder<M> {
             ciphertext_handler_result,
             output_value: output,
             output_wires_ids: output_wires,
-            true_wire_constant: ctx.lookup_wire(TRUE_WIRE).unwrap(),
-            false_wire_constant: ctx.lookup_wire(FALSE_WIRE).unwrap(),
+            true_wire_constant,
+            false_wire_constant,
             input_wires_repr: allocated_inputs,
             input_wire_values: input_values,
             gate_count,
