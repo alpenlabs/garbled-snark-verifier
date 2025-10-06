@@ -273,12 +273,12 @@ pub fn groth16_verify_compressed<C: CircuitContext>(
 fn convert_hash_to_bigint_wires(out_hash: HashOutputWires) -> Vec<Fr> {
     let mut out_hash = out_hash.value;
     // mask top 3 bits by taking the first byte of hash output and masking its top 3 bit
-    out_hash[0][5] = FALSE_WIRE;
-    out_hash[0][6] = FALSE_WIRE;
-    out_hash[0][7] = FALSE_WIRE;
+    out_hash[0].0[5] = FALSE_WIRE;
+    out_hash[0].0[6] = FALSE_WIRE;
+    out_hash[0].0[7] = FALSE_WIRE;
     // big endian to little endian ordering of BigIntWires
     out_hash.reverse();
-    let out_hash: Vec<WireId> = out_hash.into_iter().flatten().collect();
+    let out_hash: Vec<WireId> = out_hash.into_iter().flat_map(|x| x.0).collect();
     let out_hash = BigIntWires {
         bits: out_hash[0..Fr::N_BITS].to_vec(),
     };

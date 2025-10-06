@@ -3,13 +3,15 @@
 //! This limited range is sufficient for usecases concerning garbled circuit inputs
 
 use crate::{
-    CircuitContext, WireId,
+    CircuitContext, Gate, WireId,
     circuit::{
-        CircuitInput, CircuitMode, CircuitOutput, EncodeInput, ExecuteMode, FALSE_WIRE, TRUE_WIRE,
-        WiresObject,
+        CircuitInput, CircuitMode, CircuitOutput, EncodeInput, ExecuteMode, FALSE_WIRE, WiresObject,
     },
+    gadgets::{basic::full_adder, bigint::BigIntWires},
 };
+use ark_std::iter;
 use core::cmp::min;
+use num_bigint::BigUint;
 
 const OUT_LEN: usize = 32;
 const BLOCK_LEN: usize = 64;
@@ -19,14 +21,81 @@ const CHUNK_START: u32 = 1 << 0;
 const CHUNK_END: u32 = 1 << 1;
 const ROOT: u32 = 1 << 3;
 
-type U32 = [WireId; 32];
-type U8 = [WireId; 8];
+#[derive(Debug, Clone, Copy)]
+struct U32([WireId; 32]);
 
-use ark_std::iter;
-pub fn new_u8(issue: impl FnMut() -> WireId) -> U8 {
-    let v: Vec<WireId> = iter::repeat_with(issue).take(8).collect();
-    let v: U8 = v.try_into().unwrap();
-    v
+impl U32 {
+    fn from_constant(n: u32) -> U32 {
+        let wires: Vec<WireId> = BigIntWires::new_constant(32, &BigUint::from(n))
+            .unwrap()
+            .bits;
+        U32(wires.try_into().unwrap())
+    }
+
+    fn xor<C: CircuitContext>(circuit: &mut C, a: U32, b: U32) -> U32 {
+        let c: Vec<WireId> = (0..32)
+            .map(|i| {
+                let res = circuit.issue_wire();
+                circuit.add_gate(Gate::xor(a.0[i], b.0[i], res));
+                res
+            })
+            .collect();
+        U32(c.try_into().unwrap())
+    }
+
+    fn and<C: CircuitContext>(circuit: &mut C, a: U32, b: U32) -> U32 {
+        let c: Vec<WireId> = (0..32)
+            .map(|i| {
+                let res = circuit.issue_wire();
+                circuit.add_gate(Gate::and(a.0[i], b.0[i], res));
+                res
+            })
+            .collect();
+        U32(c.try_into().unwrap())
+    }
+
+    fn or<C: CircuitContext>(circuit: &mut C, x: U32, y: U32) -> U32 {
+        let xpy = Self::xor(circuit, x, y);
+        let xmy = Self::and(circuit, x, y);
+        Self::xor(circuit, xpy, xmy)
+    }
+
+    fn rotate_right(value: U32, n: u32) -> U32 {
+        let mut result = [FALSE_WIRE; 32];
+        let shift = (n % 32) as usize;
+
+        for (i, result_i) in result.iter_mut().enumerate() {
+            // Compute the new position using modular arithmetic
+            let from_index = (i + shift) % 32;
+            *result_i = value.0[from_index];
+        }
+
+        U32(result)
+    }
+
+    fn wrapping_add<C: CircuitContext>(circuit: &mut C, a: U32, b: U32) -> U32 {
+        let mut result = [FALSE_WIRE; 32];
+        let mut carry = FALSE_WIRE;
+
+        for (i, result_i) in result.iter_mut().enumerate() {
+            let ai = a.0[i];
+            let bi = b.0[i];
+            (*result_i, carry) = full_adder(circuit, ai, bi, carry);
+        }
+
+        U32(result)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct U8(pub [WireId; 8]);
+
+impl U8 {
+    pub fn new(issue: impl FnMut() -> WireId) -> Self {
+        let v: Vec<WireId> = iter::repeat_with(issue).take(8).collect();
+        let v: U8 = U8(v.try_into().unwrap());
+        v
+    }
 }
 
 // Input Message is a byte array of size 'N' for N < 1024
@@ -43,7 +112,7 @@ pub struct InputMessageWires<const N: usize> {
 
 impl<const N: usize> InputMessageWires<N> {
     pub fn new(mut issue: impl FnMut() -> WireId) -> Self {
-        let wires: Vec<U8> = std::array::from_fn::<_, N, _>(|_| new_u8(&mut issue)).to_vec();
+        let wires: Vec<U8> = std::array::from_fn::<_, N, _>(|_| U8::new(&mut issue)).to_vec();
         let wires: [U8; N] = wires.try_into().unwrap();
         InputMessageWires { byte_arr: wires }
     }
@@ -53,7 +122,7 @@ impl<const N: usize> WiresObject for InputMessageWires<N> {
     fn to_wires_vec(&self) -> Vec<WireId> {
         self.byte_arr
             .iter()
-            .flat_map(|fq| fq.iter().copied())
+            .flat_map(|fq| fq.0.iter().copied())
             .collect()
     }
 
@@ -72,14 +141,9 @@ impl<const N: usize> CircuitInput for InputMessage<N> {
     fn collect_wire_ids(repr: &Self::WireRepr) -> Vec<WireId> {
         repr.byte_arr
             .iter()
-            .flat_map(|fq| fq.iter().copied())
+            .flat_map(|fq| fq.0.iter().copied())
             .collect()
     }
-}
-
-fn u8_to_bits_le(n: u8) -> [bool; 8] {
-    let v: Vec<bool> = (0..8).map(|i| (n >> i) & 1 != 0).collect();
-    v.try_into().unwrap()
 }
 
 impl<const N: usize, M: CircuitMode<WireValue = bool>> EncodeInput<M> for InputMessage<N> {
@@ -88,9 +152,9 @@ impl<const N: usize, M: CircuitMode<WireValue = bool>> EncodeInput<M> for InputM
             .iter()
             .zip(repr.byte_arr.iter())
             .for_each(|(x, y)| {
-                let x_bits = u8_to_bits_le(*x);
-                for itr in 0..8 {
-                    cache.feed_wire(y[itr], x_bits[itr]);
+                for (i, y_i) in y.0.iter().enumerate() {
+                    let x_i = ((*x >> i) & 1) != 0;
+                    cache.feed_wire(*y_i, x_i);
                 }
             });
     }
@@ -108,7 +172,7 @@ pub struct HashOutputWires {
 
 impl HashOutputWires {
     pub fn new(mut issue: impl FnMut() -> WireId) -> Self {
-        let wires: Vec<U8> = std::array::from_fn::<_, 32, _>(|_| new_u8(&mut issue)).to_vec();
+        let wires: Vec<U8> = std::array::from_fn::<_, 32, _>(|_| U8::new(&mut issue)).to_vec();
         let wires: [U8; 32] = wires.try_into().unwrap();
         HashOutputWires { value: wires }
     }
@@ -119,7 +183,7 @@ impl WiresObject for HashOutputWires {
         HashOutputWires::new(wire_gen)
     }
     fn to_wires_vec(&self) -> Vec<WireId> {
-        self.value.into_iter().flatten().collect()
+        self.value.into_iter().flat_map(|x| x.0).collect()
     }
 }
 
@@ -144,89 +208,21 @@ impl CircuitOutput<ExecuteMode> for HashOutput {
     }
 }
 
-fn const_u32_to_bits_le(n: u32) -> U32 {
-    let vs: Vec<bool> = (0..32).map(|i| (n >> i) & 1 != 0).collect();
-    let vs: Vec<WireId> = vs
-        .iter()
-        .map(|v| if !v { FALSE_WIRE } else { TRUE_WIRE })
-        .collect();
-    vs.try_into().unwrap()
-}
-
 fn get_iv() -> [U32; 8] {
     let iv2: [U32; 8] = [
-        const_u32_to_bits_le(0x6A09E667),
-        const_u32_to_bits_le(0xBB67AE85),
-        const_u32_to_bits_le(0x3C6EF372),
-        const_u32_to_bits_le(0xA54FF53A),
-        const_u32_to_bits_le(0x510E527F),
-        const_u32_to_bits_le(0x9B05688C),
-        const_u32_to_bits_le(0x1F83D9AB),
-        const_u32_to_bits_le(0x5BE0CD19),
+        U32::from_constant(0x6A09E667),
+        U32::from_constant(0xBB67AE85),
+        U32::from_constant(0x3C6EF372),
+        U32::from_constant(0xA54FF53A),
+        U32::from_constant(0x510E527F),
+        U32::from_constant(0x9B05688C),
+        U32::from_constant(0x1F83D9AB),
+        U32::from_constant(0x5BE0CD19),
     ];
     iv2
 }
 
 const MSG_PERMUTATION: [u8; 16] = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8];
-
-fn xor_wire<C: CircuitContext>(ctx: &mut C, a: WireId, b: WireId) -> WireId {
-    let result = ctx.issue_wire();
-    ctx.add_gate(crate::Gate::xor(a, b, result));
-    result
-}
-
-fn and_wire<C: CircuitContext>(ctx: &mut C, a: WireId, b: WireId) -> WireId {
-    let result = ctx.issue_wire();
-    ctx.add_gate(crate::Gate::and(a, b, result));
-    result
-}
-
-fn wrapping_add_u32<C: CircuitContext>(circuit: &mut C, a: U32, b: U32) -> U32 {
-    let mut result = [FALSE_WIRE; 32];
-    let mut carry = FALSE_WIRE;
-
-    for i in 0..32 {
-        let ai = a[i];
-        let bi = b[i];
-        let p = xor_wire(circuit, ai, bi);
-        let g = and_wire(circuit, ai, bi);
-        result[i] = xor_wire(circuit, p, carry);
-        let t0 = and_wire(circuit, p, carry);
-        carry = xor_wire(circuit, g, t0);
-    }
-
-    result
-}
-
-fn xor_u32<C: CircuitContext>(circuit: &mut C, a: U32, b: U32) -> U32 {
-    let c: Vec<WireId> = (0..32).map(|i| xor_wire(circuit, a[i], b[i])).collect();
-    c.try_into().unwrap()
-}
-
-fn and_u32<C: CircuitContext>(circuit: &mut C, a: U32, b: U32) -> U32 {
-    let c: Vec<WireId> = (0..32).map(|i| and_wire(circuit, a[i], b[i])).collect();
-    c.try_into().unwrap()
-}
-
-fn or_u32<C: CircuitContext>(circuit: &mut C, x: U32, y: U32) -> U32 {
-    let xpy = xor_u32(circuit, x, y);
-    let xmy = and_u32(circuit, x, y);
-
-    xor_u32(circuit, xpy, xmy)
-}
-
-fn rotate_right_u32(value: U32, n: u32) -> U32 {
-    let mut result = [FALSE_WIRE; 32];
-    let shift = (n % 32) as usize;
-
-    for (i, result_i) in result.iter_mut().enumerate() {
-        // Compute the new position using modular arithmetic
-        let from_index = (i + shift) % 32;
-        *result_i = value[from_index];
-    }
-
-    result
-}
 
 // The mixing function, G, which mixes either a column or a diagonal.
 #[allow(clippy::too_many_arguments)]
@@ -240,17 +236,17 @@ fn g<C: CircuitContext>(
     mx: U32,
     my: U32,
 ) {
-    let tmp0 = wrapping_add_u32(circuit, state[a], state[b]);
-    state[a] = wrapping_add_u32(circuit, tmp0, mx);
-    state[d] = rotate_right_u32(xor_u32(circuit, state[d], state[a]), 16);
-    state[c] = wrapping_add_u32(circuit, state[c], state[d]);
-    state[b] = rotate_right_u32(xor_u32(circuit, state[b], state[c]), 12);
+    let tmp0 = U32::wrapping_add(circuit, state[a], state[b]);
+    state[a] = U32::wrapping_add(circuit, tmp0, mx);
+    state[d] = U32::rotate_right(U32::xor(circuit, state[d], state[a]), 16);
+    state[c] = U32::wrapping_add(circuit, state[c], state[d]);
+    state[b] = U32::rotate_right(U32::xor(circuit, state[b], state[c]), 12);
 
-    let tmp0 = wrapping_add_u32(circuit, state[a], state[b]);
-    state[a] = wrapping_add_u32(circuit, tmp0, my);
-    state[d] = rotate_right_u32(xor_u32(circuit, state[d], state[a]), 8);
-    state[c] = wrapping_add_u32(circuit, state[c], state[d]);
-    state[b] = rotate_right_u32(xor_u32(circuit, state[b], state[c]), 7);
+    let tmp0 = U32::wrapping_add(circuit, state[a], state[b]);
+    state[a] = U32::wrapping_add(circuit, tmp0, my);
+    state[d] = U32::rotate_right(U32::xor(circuit, state[d], state[a]), 8);
+    state[c] = U32::wrapping_add(circuit, state[c], state[d]);
+    state[b] = U32::rotate_right(U32::xor(circuit, state[b], state[c]), 7);
 }
 
 fn round<C: CircuitContext>(circuit: &mut C, state: &mut [U32; 16], m: &[U32; 16]) {
@@ -267,7 +263,7 @@ fn round<C: CircuitContext>(circuit: &mut C, state: &mut [U32; 16], m: &[U32; 16
 }
 
 fn permute(m: &mut [U32; 16]) {
-    let mut permuted = [[FALSE_WIRE; 32]; 16];
+    let mut permuted = [U32([FALSE_WIRE; 32]); 16];
     for i in 0..16 {
         permuted[i] = m[MSG_PERMUTATION[i] as usize];
     }
@@ -282,8 +278,8 @@ fn compress<C: CircuitContext>(
     block_len: U32,
     flags: U32,
 ) -> [U32; 16] {
-    let counter_low = const_u32_to_bits_le(counter as u32);
-    let counter_high = const_u32_to_bits_le((counter >> 32) as u32);
+    let counter_low = U32::from_constant(counter as u32);
+    let counter_high = U32::from_constant((counter >> 32) as u32);
     #[rustfmt::skip]
     let iv: [U32; 8] = get_iv();
     let mut state = [
@@ -322,8 +318,8 @@ fn compress<C: CircuitContext>(
     round(circuit, &mut state, &block); // round 7
 
     for i in 0..8 {
-        state[i] = xor_u32(circuit, state[i], state[i + 8]);
-        state[i + 8] = xor_u32(circuit, state[i + 8], chaining_value[i]);
+        state[i] = U32::xor(circuit, state[i], state[i + 8]);
+        state[i + 8] = U32::xor(circuit, state[i + 8], chaining_value[i]);
     }
     state
 }
@@ -335,7 +331,8 @@ fn first_8_words(compression_output: [U32; 16]) -> [U32; 8] {
 fn words_from_little_endian_bytes(bytes: &[U8], words: &mut [U32]) {
     debug_assert_eq!(bytes.len(), 4 * words.len());
     for (four_bytes, word) in bytes.chunks_exact(4).zip(words) {
-        let app_four_bytes: U32 = four_bytes.concat().try_into().unwrap();
+        let wire_vec: Vec<WireId> = four_bytes.iter().flat_map(|x| x.0).collect();
+        let app_four_bytes: U32 = U32(wire_vec.try_into().unwrap());
         *word = app_four_bytes;
     }
 }
@@ -349,9 +346,9 @@ struct Output {
 
 impl Output {
     fn root_output_bytes<C: CircuitContext>(&self, circuit: &mut C, out_slice: &mut [U8]) {
-        let root = const_u32_to_bits_le(ROOT);
+        let root = U32::from_constant(ROOT);
         for (output_block_counter, out_block) in out_slice.chunks_mut(2 * OUT_LEN).enumerate() {
-            let flags = or_u32(circuit, self.flags, root);
+            let flags = U32::or(circuit, self.flags, root);
             let words = compress(
                 circuit,
                 &self.input_chaining_value,
@@ -362,7 +359,7 @@ impl Output {
             );
             for (word_bits, out_word_bits) in words.iter().zip(out_block.chunks_mut(4)) {
                 for (i, byte_bits) in out_word_bits.iter_mut().enumerate() {
-                    let arr: U8 = word_bits[8 * i..(i + 1) * 8].try_into().unwrap();
+                    let arr: U8 = U8(word_bits.0[8 * i..(i + 1) * 8].try_into().unwrap());
                     *byte_bits = arr;
                 }
             }
@@ -384,7 +381,7 @@ impl ChunkState {
         Self {
             chaining_value: key_words,
             chunk_counter,
-            block: [[FALSE_WIRE; 8]; BLOCK_LEN],
+            block: [U8([FALSE_WIRE; 8]); BLOCK_LEN],
             block_len: 0,
             blocks_compressed: 0,
             flags,
@@ -401,20 +398,20 @@ impl ChunkState {
         } else {
             0
         };
-        const_u32_to_bits_le(r)
+        U32::from_constant(r)
     }
 
     fn update<C: CircuitContext>(&mut self, circuit: &mut C, mut input: &[U8]) {
         let zero_gate = FALSE_WIRE;
-        let block_len = const_u32_to_bits_le(BLOCK_LEN as u32);
+        let block_len = U32::from_constant(BLOCK_LEN as u32);
         while !input.is_empty() {
             // If the block buffer is full, compress it and clear it. More
             // input is coming, so this compression is not CHUNK_END.
             if self.block_len as usize == BLOCK_LEN {
-                let mut block_words = [[zero_gate; 32]; 16];
+                let mut block_words = [U32([zero_gate; 32]); 16];
                 words_from_little_endian_bytes(&self.block, &mut block_words);
                 let start_flag = self.start_flag();
-                let flags = or_u32(circuit, self.flags, start_flag);
+                let flags = U32::or(circuit, self.flags, start_flag);
                 let cmp = compress(
                     circuit,
                     &self.chaining_value,
@@ -425,7 +422,7 @@ impl ChunkState {
                 );
                 self.chaining_value = first_8_words(cmp);
                 self.blocks_compressed += 1;
-                self.block = [[zero_gate; 8]; BLOCK_LEN];
+                self.block = [U8([zero_gate; 8]); BLOCK_LEN];
                 self.block_len = 0;
             }
 
@@ -440,17 +437,17 @@ impl ChunkState {
 
     fn output<C: CircuitContext>(&self, circuit: &mut C) -> Output {
         let zero_gate = FALSE_WIRE;
-        let mut block_words = [[zero_gate; 32]; 16];
+        let mut block_words = [U32([zero_gate; 32]); 16];
         words_from_little_endian_bytes(&self.block, &mut block_words);
         let start_flag = self.start_flag();
-        let flags = or_u32(circuit, self.flags, start_flag);
-        let chunk_end = const_u32_to_bits_le(CHUNK_END);
-        let flags = or_u32(circuit, flags, chunk_end);
+        let flags = U32::or(circuit, self.flags, start_flag);
+        let chunk_end = U32::from_constant(CHUNK_END);
+        let flags = U32::or(circuit, flags, chunk_end);
 
         Output {
             input_chaining_value: self.chaining_value,
             block_words,
-            block_len: const_u32_to_bits_le(self.block_len as u32),
+            block_len: U32::from_constant(self.block_len as u32),
             flags,
         }
     }
@@ -472,7 +469,7 @@ impl Hasher {
     pub(crate) fn new() -> Self {
         let zero_gate = FALSE_WIRE;
         let iv = get_iv();
-        let zero = [zero_gate; 32];
+        let zero = U32([zero_gate; 32]);
         Self::new_internal(iv, zero)
     }
 
@@ -506,7 +503,7 @@ pub fn blake3_hash<const N: usize, C: CircuitContext>(
     let mut hasher = Hasher::new();
     hasher.update(circuit, &input_message_bytes.byte_arr);
 
-    let mut hash = [[FALSE_WIRE; 8]; 32];
+    let mut hash = [U8([FALSE_WIRE; 8]); 32];
     hasher.finalize(circuit, &mut hash);
     HashOutputWires { value: hash }
 }
