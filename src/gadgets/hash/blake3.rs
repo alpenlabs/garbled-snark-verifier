@@ -43,21 +43,15 @@ impl U32 {
         U32(c.try_into().unwrap())
     }
 
-    fn and<C: CircuitContext>(circuit: &mut C, a: U32, b: U32) -> U32 {
+    fn or<C: CircuitContext>(circuit: &mut C, a: U32, b: U32) -> U32 {
         let c: Vec<WireId> = (0..32)
             .map(|i| {
                 let res = circuit.issue_wire();
-                circuit.add_gate(Gate::and(a.0[i], b.0[i], res));
+                circuit.add_gate(Gate::or(a.0[i], b.0[i], res));
                 res
             })
             .collect();
         U32(c.try_into().unwrap())
-    }
-
-    fn or<C: CircuitContext>(circuit: &mut C, x: U32, y: U32) -> U32 {
-        let xpy = Self::xor(circuit, x, y);
-        let xmy = Self::and(circuit, x, y);
-        Self::xor(circuit, xpy, xmy)
     }
 
     fn rotate_right(value: U32, n: u32) -> U32 {
